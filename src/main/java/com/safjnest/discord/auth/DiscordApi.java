@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Supplier;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
@@ -159,6 +160,13 @@ public class DiscordApi {
     }
 
     public Map<String, GuildAccess> guildAccess(String userId) {
+        return guildAccess(userId, null);
+    }
+
+    public Map<String, GuildAccess> guildAccess(String userId, Set<String> guildIds) {
+        if (guildIds != null && guildIds.isEmpty())
+            return Map.of();
+
         long started = System.nanoTime();
         String failure = "Cannot verify guild membership";
         JDA jda = requireDiscord(failure);
@@ -166,6 +174,9 @@ public class DiscordApi {
 
         try {
             for (Guild guild : jda.getGuilds()) {
+                if (guildIds != null && !guildIds.contains(guild.getId()))
+                    continue;
+
                 Member member = member(guild, userId, failure);
                 if (member != null)
                     result.put(guild.getId(), new GuildAccess(guild.getName(), member.isOwner() || member.hasPermission(Permission.ADMINISTRATOR)));
@@ -176,7 +187,8 @@ public class DiscordApi {
             throw unavailable(failure);
         }
 
-        LOG.debug("Sound memberships: {} guilds checked in {} ms", jda.getGuilds().size(), (System.nanoTime() - started) / 1_000_000);
+        LOG.debug("Sound memberships: {} guilds requested in {} ms",
+            guildIds == null ? jda.getGuilds().size() : guildIds.size(), (System.nanoTime() - started) / 1_000_000);
 
         return result;
     }

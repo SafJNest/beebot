@@ -13,6 +13,7 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.NoSuchElementException;
@@ -35,6 +36,7 @@ import com.safjnest.exception.Exception.Type;
 import com.safjnest.sound.model.Sound;
 import com.safjnest.sound.model.SoundCatalog;
 import com.safjnest.sound.model.SoundComment;
+import com.safjnest.sound.model.SoundSource;
 import com.safjnest.sound.model.SoundVote;
 import com.safjnest.sound.model.SoundTarget;
 import com.safjnest.sound.model.Soundboard;
@@ -53,6 +55,7 @@ public final class SoundService {
     private static final int EXPLORE_SIZE = 10;
     private static final int MINE_SIZE = 5;
     private static final int SUGGESTION_TAGS = 3;
+    private static final int MAX_SUGGESTION_SIZE = 10;
     private static final Base64.Encoder CURSOR_ENCODER = Base64.getUrlEncoder().withoutPadding();
     private static final Base64.Decoder CURSOR_DECODER = Base64.getUrlDecoder();
 
@@ -89,31 +92,42 @@ public final class SoundService {
         Cursor after = decode(filter.cursor(), scope);
 
         return sounds.read(() -> {
-            Position position = after == null ? null : after.position();
-            List<QueryRecord> rows = sounds.search(filter, viewer, position, filter.limit() + 1);
-            List<QueryRecord> items = rows.subList(0, Math.min(rows.size(), filter.limit()));
+            List<QueryRecord> rows = sounds.search(filter, viewer, position(after), filter.limit() + 1);
+            SoundCatalog.Page<SoundCatalog.Card> page = page(rows, filter.limit(), scope, items -> {
+                return cards(items, viewer);
+            });
 
-            String next = rows.size() > filter.limit() ? encode(scope, catalogPosition(items.getLast()), null) : null;
+            return new SoundCatalog.Results(page.items(), List.of(), page.nextCursor());
+        });
+    }
 
-            return new SoundCatalog.Results(cards(items, viewer), List.of(), next);
+    public SoundCatalog.SearchResults<?> searchCatalog(SoundCatalog.Search request, Set<SoundCatalog.Section> sections,
+            boolean suggest, String viewer) {
+        SoundCatalog.Search filter = normalize(request);
+        if (filter.cursor() != null && sections.size() != 1)
+            throw Exception.invalidRequest("Select one search type when using a cursor");
+        if (filter.sort() == SoundCatalog.Sort.MOST_DISLIKED && !sections.equals(Set.of(SoundCatalog.Section.SOUNDS)))
+            throw Exception.invalidRequest("Sort mostDisliked is available for sounds only");
+
+        Set<String> guilds = sections.contains(SoundCatalog.Section.BOARDS) && (!filter.q().isEmpty() || filter.hasSoundFilters())
+            ? searchBoardGuilds(viewer) : Set.of();
+
+        return sounds.read(() -> {
+            if (suggest)
+                return searchSections(request, filter, sections, true, viewer, guilds, this::previews);
+
+            return searchSections(request, filter, sections, false, viewer, guilds, rows -> {
+                return cards(rows, viewer);
+            });
         });
     }
 
     public SoundCatalog.Page<Soundboard> searchSoundboards(String query, String viewer, Integer pageSize, String cursor) {
         String q = normalizeText(query);
-        int limit = limit(pageSize);
-        String scope = scope("soundboards", q, viewer);
-        Cursor after = decode(cursor, scope);
-        List<QueryRecord> rows = database.searchSoundboards(q, viewer, after == null ? null : after.position(), limit + 1);
-        List<Soundboard> items = new ArrayList<>();
-        List<QueryRecord> page = rows.subList(0, Math.min(rows.size(), limit));
+        SoundCatalog.Sort sort = q.isEmpty() ? SoundCatalog.Sort.NEWEST : SoundCatalog.Sort.RELEVANCE;
+        SoundCatalog.Search filter = new SoundCatalog.Search(q, null, null, null, null, sort, limit(pageSize), cursor);
 
-        for (QueryRecord row : page)
-            items.add(Soundboard.fromRow(row, viewer != null && viewer.equals(row.get("user_id")), false, false));
-
-        String next = rows.size() > limit ? encode(scope, catalogPosition(page.getLast()), null) : null;
-
-        return new SoundCatalog.Page<>(List.copyOf(items), next);
+        return searchCatalog(filter, Set.of(SoundCatalog.Section.BOARDS), false, viewer).boards();
     }
 
     public Soundboard.PublicDetail publicSoundboard(String boardId, String viewer) {
@@ -219,6 +233,14 @@ public final class SoundService {
         return addComment(SoundTarget.sound(id(soundId)), viewer, parentId, text);
     }
 
+    public SoundComment.Change addComment(SoundSource source, String viewer, String text) {
+        String actor = requireUser(viewer);
+        String sourceId = id(source.id());
+        String parent = source.type() == SoundSource.Type.COMMENT ? sourceId : null;
+
+        return addComment(sourceTarget(source.type(), sourceId), actor, parent, text);
+    }
+
     public SoundComment.Change addComment(SoundTarget target, String viewer, String parentId, String text) {
         String actor = requireUser(viewer);
         String parent = parentId == null ? null : id(parentId);
@@ -256,22 +278,29 @@ public final class SoundService {
     }
 
     public SoundVote.Result vote(String soundId, String commentId, String viewer, SoundVote vote) {
-        String actor = requireUser(viewer);
-        String id = id(soundId);
-        String target = commentId == null ? null : id(commentId);
-        if (target == null)
-            return withSound(id, sound -> sound.vote(actor, vote));
-
-        return sounds.vote(id, target, actor, vote);
+        return vote(SoundTarget.sound(id(soundId)), commentId, viewer, vote);
     }
 
-    public SoundVote.Result voteSoundboard(String boardId, String commentId, String viewer, SoundVote vote) {
+    public SoundVote.Result vote(SoundSource source, String viewer, SoundVote vote) {
         String actor = requireUser(viewer);
-        SoundTarget target = SoundTarget.soundboard(id(boardId));
-        if (commentId == null && vote == SoundVote.DISLIKE)
-            throw Exception.invalidRequest("A soundboard vote must be LIKE or null");
+        String sourceId = id(source.id());
+        String commentId = source.type() == SoundSource.Type.COMMENT ? sourceId : null;
 
-        return sounds.vote(target, commentId == null ? null : id(commentId), actor, vote, interactionGuilds(target, actor));
+        return vote(sourceTarget(source.type(), sourceId), commentId, actor, vote);
+    }
+
+    public SoundVote.Result vote(SoundTarget target, String commentId, String viewer, SoundVote vote) {
+        String actor = requireUser(viewer);
+        String comment = commentId == null ? null : id(commentId);
+        if (target.soundboard() && comment == null && vote == SoundVote.DISLIKE)
+            throw Exception.invalidRequest("A soundboard vote must be LIKE or null");
+        if (!target.soundboard() && comment == null) {
+            return withSound(target.id(), sound -> {
+                return sound.vote(actor, vote);
+            });
+        }
+
+        return sounds.vote(target, comment, actor, vote, interactionGuilds(target, actor));
     }
 
     public int recordWebPlay(String soundId, String viewer, UUID playbackId) {
@@ -319,6 +348,90 @@ public final class SoundService {
     }
 
     /* -------------------------------------------------------------------------- */
+
+    private <T> SoundCatalog.SearchResults<T> searchSections(SoundCatalog.Search request, SoundCatalog.Search filter,
+            Set<SoundCatalog.Section> sections, boolean suggest, String viewer, Set<String> guilds,
+            Function<List<QueryRecord>, List<T>> projectSounds) {
+        SoundCatalog.Page<T> soundPage = null;
+        SoundCatalog.Page<Soundboard> boardPage = null;
+        SoundCatalog.Page<SoundCatalog.TagCount> tagPage = null;
+
+        for (SoundCatalog.Section section : sections) {
+            int limit = sectionLimit(section, request == null ? null : request.limit(), suggest);
+            String scope = scope("search", section, suggest, filter.q(), filter.tag(), filter.uploaderId(),
+                filter.minDurationMs(), filter.maxDurationMs(), filter.sort(), viewer);
+            Position after = position(decode(filter.cursor(), scope));
+
+            switch (section) {
+                case SOUNDS -> soundPage = page(sounds.search(filter, viewer, after, limit + 1), limit, scope, projectSounds);
+                case BOARDS -> boardPage = page(sounds.searchBoards(filter, viewer, guilds, after, limit + 1),
+                    limit, scope, rows -> boards(rows, viewer));
+                case TAGS -> tagPage = page(sounds.searchTags(filter, viewer, after, limit + 1), limit, scope, SoundService::tags);
+            }
+        }
+
+        return new SoundCatalog.SearchResults<>(soundPage, boardPage, tagPage);
+    }
+
+    private static int sectionLimit(SoundCatalog.Section section, Integer requested, boolean suggest) {
+        if (requested != null)
+            return suggest ? Math.min(requested, MAX_SUGGESTION_SIZE) : requested;
+        if (suggest)
+            return section == SoundCatalog.Section.TAGS ? SUGGESTION_TAGS : MINE_SIZE;
+
+        return section == SoundCatalog.Section.SOUNDS ? PAGE_SIZE : EXPLORE_SIZE;
+    }
+
+    private static <T> SoundCatalog.Page<T> page(List<QueryRecord> rows, int limit, String scope,
+            Function<List<QueryRecord>, List<T>> project) {
+        List<QueryRecord> items = rows.subList(0, Math.min(rows.size(), limit));
+        String next = rows.size() > limit ? encode(scope, catalogPosition(items.getLast()), null) : null;
+
+        return new SoundCatalog.Page<>(project.apply(items), next);
+    }
+
+    private static Position position(Cursor cursor) {
+        return cursor == null ? null : cursor.position();
+    }
+
+    private Set<String> searchBoardGuilds(String viewer) {
+        if (viewer == null)
+            return Set.of();
+
+        Set<String> candidates = new LinkedHashSet<>();
+        for (QueryRecord row : sounds.privateBoardGuilds(viewer))
+            candidates.add(row.get("guild_id"));
+
+        return discord.guildAccess(viewer, candidates).keySet();
+    }
+
+    private static List<Soundboard> boards(List<QueryRecord> rows, String viewer) {
+        List<Soundboard> boards = new ArrayList<>(rows.size());
+        for (QueryRecord row : rows)
+            boards.add(Soundboard.fromRow(row, viewer != null && viewer.equals(row.get("user_id")), false, false));
+
+        return List.copyOf(boards);
+    }
+
+    private List<SoundCatalog.Preview> previews(List<QueryRecord> rows) {
+        List<SoundCatalog.Preview> items = new ArrayList<>(rows.size());
+        for (QueryRecord row : rows) {
+            String id = row.get("id");
+            long duration = row.getAsLong("duration_ms");
+            items.add(new SoundCatalog.Preview(id, row.get("name"), cache.playbackUrl(row),
+                SoundFiles.getInstance().imageUrl(id, row.get("thumbnail")), duration > 0 ? duration : null));
+        }
+
+        return List.copyOf(items);
+    }
+
+    private SoundTarget sourceTarget(SoundSource.Type type, String id) {
+        return switch (type) {
+            case SOUND -> SoundTarget.sound(id);
+            case SOUNDBOARD -> SoundTarget.soundboard(id);
+            case COMMENT -> sounds.commentTarget(id);
+        };
+    }
 
     private <T> T withSound(String id, Function<Sound, T> operation) {
         try {

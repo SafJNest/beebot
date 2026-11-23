@@ -2,6 +2,7 @@ package com.safjnest.spring.controller.beebot;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.EnumSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -14,6 +15,7 @@ import com.safjnest.exception.Exception.Type;
 import com.safjnest.sound.SoundService;
 import com.safjnest.sound.model.SoundCatalog;
 import com.safjnest.sound.model.SoundComment;
+import com.safjnest.sound.model.SoundSource;
 import com.safjnest.sound.model.SoundVote;
 import com.safjnest.sound.model.SoundTarget;
 import com.safjnest.sound.model.Soundboard;
@@ -55,6 +57,30 @@ public final class SoundCommunityController {
     }
 
     public record Image(String imageUrl) {}
+
+    @GetMapping("/public/search")
+    public SoundCatalog.SearchResults<?> searchCatalog(@RequestAttribute(AuthFilter.AUTH_CONTEXT) AuthContext auth,
+            @RequestParam(name = "q", required = false) String query,
+            @RequestParam(name = "types", required = false) String types,
+            @RequestParam(name = "mode", required = false) String mode,
+            @RequestParam(name = "tag", required = false) String tag,
+            @RequestParam(name = "uploaderId", required = false) String uploaderId,
+            @RequestParam(name = "minDurationMs", required = false) Long minDurationMs,
+            @RequestParam(name = "maxDurationMs", required = false) Long maxDurationMs,
+            @RequestParam(name = "sort", required = false) String sort,
+            @RequestParam(name = "limit", required = false) Integer limit,
+            @RequestParam(name = "cursor", required = false) String cursor) {
+        SoundCatalog.Search filter = new SoundCatalog.Search(query, tag, uploaderId, minDurationMs,
+            maxDurationMs, catalogSort(sort), limit, cursor);
+        boolean suggest = switch (mode) {
+            case null -> false;
+            case "search" -> false;
+            case "suggest" -> true;
+            default -> throw Exception.invalidRequest("Invalid search mode");
+        };
+
+        return sounds.searchCatalog(filter, sections(types), suggest, viewer(auth));
+    }
 
     @GetMapping("/public/sounds/explore")
     public SoundCatalog.Explore explore(@RequestAttribute(AuthFilter.AUTH_CONTEXT) AuthContext auth,
@@ -124,6 +150,15 @@ public final class SoundCommunityController {
         sounds.recordWebPlay(soundId, viewer(auth), playbackId(id), boardId);
     }
 
+    @PostMapping(path = "/comments", consumes = MediaType.APPLICATION_JSON_VALUE)
+    @ResponseStatus(HttpStatus.CREATED)
+    public SoundComment.Change createComment(@RequestAttribute(AuthFilter.AUTH_CONTEXT) AuthContext auth,
+            @RequestBody JsonNode body) {
+        requireFields(body, "source", "text");
+
+        return sounds.addComment(source(body), user(auth), text(body, "text"));
+    }
+
     @PostMapping(path = {"/sounds/{soundId}/comments", "/soundboards/{boardId}/comments"}, consumes = MediaType.APPLICATION_JSON_VALUE)
     @ResponseStatus(HttpStatus.CREATED)
     public SoundComment.Change createComment(@RequestAttribute(AuthFilter.AUTH_CONTEXT) AuthContext auth,
@@ -151,17 +186,29 @@ public final class SoundCommunityController {
         return sounds.deleteComment(resource(path), commentId, user(auth));
     }
 
+    @PutMapping(path = "/votes", consumes = MediaType.APPLICATION_JSON_VALUE)
+    public SoundVote.Result setVote(@RequestAttribute(AuthFilter.AUTH_CONTEXT) AuthContext auth,
+            @RequestBody JsonNode body) {
+        requireFields(body, "source", "vote");
+
+        return sounds.vote(source(body), user(auth), vote(body));
+    }
+
     @PutMapping(path = {"/sounds/{soundId}/vote", "/soundboards/{boardId}/vote"}, consumes = MediaType.APPLICATION_JSON_VALUE)
     public SoundVote.Result voteSound(@RequestAttribute(AuthFilter.AUTH_CONTEXT) AuthContext auth,
             @PathVariable Map<String, String> path, @RequestBody JsonNode body) {
-        return vote(path, null, user(auth), vote(body));
+        requireFields(body, "vote");
+
+        return sounds.vote(resource(path), null, user(auth), vote(body));
     }
 
     @PutMapping(path = {"/sounds/{soundId}/comments/{commentId}/vote", "/soundboards/{boardId}/comments/{commentId}/vote"}, consumes = MediaType.APPLICATION_JSON_VALUE)
     public SoundVote.Result voteComment(@RequestAttribute(AuthFilter.AUTH_CONTEXT) AuthContext auth,
             @PathVariable Map<String, String> path, @PathVariable("commentId") String commentId,
             @RequestBody JsonNode body) {
-        return vote(path, commentId, user(auth), vote(body));
+        requireFields(body, "vote");
+
+        return sounds.vote(resource(path), commentId, user(auth), vote(body));
     }
 
     @PutMapping(path = "/sounds/{soundId}/image", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -200,12 +247,17 @@ public final class SoundCommunityController {
         }
     }
 
-    private SoundVote.Result vote(Map<String, String> path, String commentId, String viewer, SoundVote vote) {
-        SoundTarget target = resource(path);
-        if (target.soundboard())
-            return sounds.voteSoundboard(target.id(), commentId, viewer, vote);
+    private SoundSource source(JsonNode body) {
+        JsonNode source = body.path("source");
+        requireFields(source, "type", "id");
+        SoundSource.Type type = switch (text(source, "type")) {
+            case "SOUND" -> SoundSource.Type.SOUND;
+            case "SOUNDBOARD" -> SoundSource.Type.SOUNDBOARD;
+            case "COMMENT" -> SoundSource.Type.COMMENT;
+            default -> throw Exception.invalidRequest("'source.type' must be SOUND, SOUNDBOARD or COMMENT");
+        };
 
-        return sounds.vote(target.id(), commentId, viewer, vote);
+        return new SoundSource(type, text(source, "id"));
     }
 
     private String viewer(AuthContext auth) {
@@ -230,6 +282,23 @@ public final class SoundCommunityController {
             case "mostDisliked" -> SoundCatalog.Sort.MOST_DISLIKED;
             default -> throw Exception.invalidRequest("Invalid catalog sort");
         };
+    }
+
+    private Set<SoundCatalog.Section> sections(String value) {
+        if (value == null)
+            return EnumSet.allOf(SoundCatalog.Section.class);
+
+        Set<SoundCatalog.Section> sections = EnumSet.noneOf(SoundCatalog.Section.class);
+        for (String part : value.split(",", -1)) {
+            sections.add(switch (part.strip()) {
+                case "sounds" -> SoundCatalog.Section.SOUNDS;
+                case "boards" -> SoundCatalog.Section.BOARDS;
+                case "tags" -> SoundCatalog.Section.TAGS;
+                default -> throw Exception.invalidRequest("Search types must be sounds, boards or tags");
+            });
+        }
+
+        return sections;
     }
 
     private SoundComment.Sort commentSort(String value) {
@@ -273,7 +342,6 @@ public final class SoundCommunityController {
     }
 
     private SoundVote vote(JsonNode body) {
-        requireFields(body, "vote");
         if (body.path("vote").isNull())
             return null;
 

@@ -18,8 +18,18 @@ public final class SoundCatalog {
         MOST_DISLIKED
     }
 
+    public enum Section {
+        SOUNDS,
+        BOARDS,
+        TAGS
+    }
+
     public record Search(String q, String tag, String uploaderId, Long minDurationMs, Long maxDurationMs,
-            Sort sort, Integer limit, String cursor) {}
+            Sort sort, Integer limit, String cursor) {
+        public boolean hasSoundFilters() {
+            return !tag.isEmpty() || uploaderId != null || minDurationMs != null || maxDurationMs != null;
+        }
+    }
 
     public record Card(String id, String name, String description, @JsonProperty("public") boolean isPublic, String createdAt, Long durationMs,
             String audioUrl, String imageUrl, Map<String, Object> uploader, List<Tag> tags,
@@ -28,6 +38,11 @@ public final class SoundCatalog {
     public record Viewer(boolean ownedByMe, SoundVote vote) {}
 
     public record Page<T>(List<T> items, String nextCursor) {}
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record SearchResults<T>(Page<T> sounds, Page<Soundboard> boards, Page<TagCount> tags) {}
+
+    public record Preview(String id, String name, String audioUrl, String imageUrl, Long durationMs) {}
 
     public record Results(List<Card> items, List<Card> mine, String nextCursor) {}
 

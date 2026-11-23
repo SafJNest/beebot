@@ -210,7 +210,7 @@ public class BotDB extends AbstractDB {
             return List.of();
 
         List<Object> arguments = new ArrayList<>();
-        arguments.add("%" + escapeSoundQuery(query) + "%");
+        String match = SoundDB.soundText(query.strip().toLowerCase(Locale.ROOT), arguments);
         String visibility = soundVisibility(userId, Set.of(guildId), arguments);
         String owner = "";
         if (author != null) {
@@ -218,7 +218,7 @@ public class BotDB extends AbstractDB {
             arguments.add(author);
         }
 
-        return soundIds(readSoundRows("SELECT s.id FROM sound s WHERE s.name LIKE ? ESCAPE '!' AND " + visibility + owner
+        return soundIds(readSoundRows("SELECT s.id FROM sound s WHERE " + match + " AND " + visibility + owner
             + " ORDER BY s.plays DESC, s.likes DESC, s.id LIMIT 25", arguments.toArray()));
     }
 
@@ -389,43 +389,6 @@ public class BotDB extends AbstractDB {
             throw new Exception(Type.FORBIDDEN, "soundboard_forbidden", "Only the uploader or a guild administrator may edit this soundboard");
 
         return new SoundboardAccess(guildId, userId, canAdminister);
-    }
-
-    public List<QueryRecord> searchSoundboards(String query, String viewer, SoundDB.Position after, int limit) {
-        List<Object> args = new ArrayList<>();
-        String rank = "0";
-        if (!query.isEmpty()) {
-            rank = "CASE WHEN LOWER(b.name)=? THEN 2 WHEN LOWER(b.name) LIKE ? ESCAPE '!' THEN 1 ELSE 0 END";
-            args.add(query);
-            args.add(escapeSoundQuery(query) + "%");
-        }
-
-        StringBuilder sql = new StringBuilder("SELECT * FROM (SELECT b.id,b.guild_id,b.user_id,b.name,b.thumbnail,")
-            .append("b.public,b.sort_mode,b.likes,b.plays,b.comments, ").append(rank)
-            .append(" AS sort_rank, 0 AS sort_score FROM soundboard b WHERE (b.public=1");
-        if (viewer != null) {
-            sql.append(" OR b.user_id=?");
-            args.add(viewer);
-        }
-
-        sql.append(")");
-        if (!query.isEmpty()) {
-            sql.append(" AND LOWER(b.name) LIKE ? ESCAPE '!'");
-            args.add("%" + escapeSoundQuery(query) + "%");
-        }
-
-        sql.append(") ranked");
-        if (after != null) {
-            sql.append(" WHERE (sort_rank < ? OR (sort_rank = ? AND id < ?))");
-            args.add(after.rank());
-            args.add(after.rank());
-            args.add(after.id());
-        }
-
-        sql.append(" ORDER BY sort_rank DESC,id DESC LIMIT ?");
-        args.add(limit);
-
-        return readSoundRows(sql.toString(), args.toArray());
     }
 
     public List<String> readSoundboardSoundIds(String id) {
@@ -1853,10 +1816,8 @@ public class BotDB extends AbstractDB {
             where = soundVisibility(selection.userId(), selection.guilds(), args);
         }
 
-        if (!selection.q().isEmpty()) {
-            where += " AND LOWER(s.name) LIKE ? ESCAPE '!'";
-            args.add("%" + escapeSoundQuery(selection.q()) + "%");
-        }
+        if (!selection.q().isEmpty())
+            where += " AND " + SoundDB.soundText(selection.q(), args);
 
         if (!selection.tag().isEmpty()) {
             where += " AND EXISTS (SELECT 1 FROM tag_sounds ts JOIN tag t ON t.id = ts.tag_id WHERE ts.sound_id = s.id AND LOWER(t.name) = ?)";

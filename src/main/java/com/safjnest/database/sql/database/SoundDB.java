@@ -8,6 +8,7 @@ import java.sql.Statement;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -71,53 +72,116 @@ public final class SoundDB {
         }
         sql.append(")");
 
-        if (!filter.q().isEmpty()) {
-            String pattern = "%" + BotDB.escapeSoundQuery(filter.q()) + "%";
+        if (!filter.q().isEmpty())
+            sql.append(" AND ").append(soundText(filter.q(), values));
+
+        appendSoundFilters(sql, values, filter);
+
+        return rankedPage(sql, values, after, limit);
+    }
+
+    public List<QueryRecord> privateBoardGuilds(String viewer) {
+        return database.readSoundRows("""
+            SELECT DISTINCT guild_id FROM soundboard WHERE public=0 AND user_id=? AND guild_id IS NOT NULL
+            """, viewer);
+    }
+
+    public List<QueryRecord> searchBoards(SoundCatalog.Search filter, String viewer, Set<String> guilds, Position after, int limit) {
+        List<Object> args = new ArrayList<>();
+        String q = filter.q();
+        String nameMatch = "LOWER(b.name) LIKE ? ESCAPE '!'";
+        String rank = "0";
+        if (!q.isEmpty() && filter.sort() == SoundCatalog.Sort.RELEVANCE) {
+            rank = "CASE WHEN LOWER(b.name)=? THEN 3 WHEN " + nameMatch + " THEN 2 WHEN " + nameMatch + " THEN 1 ELSE 0 END";
+            args.add(q);
+            args.add(BotDB.escapeSoundQuery(q) + "%");
+            args.add(contains(q));
+        }
+
+        String score = switch (filter.sort()) {
+            case MOST_LIKED -> "b.likes";
+            case NEWEST -> "0";
+            default -> "b.plays";
+        };
+        StringBuilder sql = new StringBuilder("""
+            SELECT * FROM (SELECT b.id,b.guild_id,b.user_id,b.name,b.thumbnail,b.public,b.sort_mode,b.likes,b.plays,b.comments,
+            """).append(rank).append(" AS sort_rank, ").append(score)
+            .append(" AS sort_score FROM soundboard b WHERE (b.public=1");
+        if (viewer != null) {
+            sql.append(" OR b.user_id=?");
+            args.add(viewer);
+        }
+        sql.append(")");
+
+        boolean hasFilters = filter.hasSoundFilters();
+        if (!q.isEmpty() || hasFilters) {
+            sql.append(" AND (");
+            if (!q.isEmpty() && !hasFilters) {
+                sql.append(nameMatch).append(" OR ");
+                args.add(contains(q));
+            }
+
             sql.append("""
-                 AND (LOWER(s.name) LIKE ? ESCAPE '!' OR EXISTS (
-                    SELECT 1 FROM tag_sounds ts JOIN tag t ON t.id=ts.tag_id
-                    WHERE ts.sound_id=s.id AND LOWER(t.name) LIKE ? ESCAPE '!'
-                ))
+                EXISTS (SELECT 1 FROM soundboard_sounds bs JOIN sound s ON s.id=bs.sound_id
+                WHERE bs.id=b.id AND (s.public=1
                 """);
-            values.add(pattern);
-            values.add(pattern);
+            if (viewer != null) {
+                sql.append(" OR (b.public=0 AND (s.user_id=?");
+                args.add(viewer);
+                if (!guilds.isEmpty()) {
+                    sql.append(" OR (s.guild_id=b.guild_id AND b.guild_id IN (")
+                        .append(String.join(",", Collections.nCopies(guilds.size(), "?"))).append("))");
+                    args.addAll(guilds);
+                }
+                sql.append("))");
+            }
+            sql.append(")");
+            appendSoundFilters(sql, args, filter);
+
+            if (!q.isEmpty()) {
+                sql.append(" AND (");
+                if (hasFilters) {
+                    sql.append(nameMatch).append(" OR ");
+                    args.add(contains(q));
+                }
+                sql.append(soundText(q, args)).append(")");
+            }
+            sql.append("))");
         }
 
+        return rankedPage(sql, args, after, limit);
+    }
+
+    public List<QueryRecord> searchTags(SoundCatalog.Search filter, String viewer, Position after, int limit) {
+        List<Object> args = new ArrayList<>();
+        String q = filter.q();
+        String rank = "0";
+        if (!q.isEmpty()) {
+            rank = "CASE WHEN LOWER(t.name)=? THEN 2 WHEN LOWER(t.name) LIKE ? ESCAPE '!' THEN 1 ELSE 0 END";
+            args.add(q);
+            args.add(BotDB.escapeSoundQuery(q) + "%");
+        }
+
+        StringBuilder sql = new StringBuilder("SELECT * FROM (SELECT t.id,t.name,COUNT(DISTINCT s.id) AS sound_count, ")
+            .append(rank).append(" AS sort_rank, COUNT(DISTINCT s.id) AS sort_score")
+            .append(" FROM tag t JOIN tag_sounds ts ON ts.tag_id=t.id JOIN sound s ON s.id=ts.sound_id WHERE (s.public=1");
+        if (viewer != null) {
+            sql.append(" OR s.user_id=?");
+            args.add(viewer);
+        }
+        sql.append(")");
+        if (!q.isEmpty()) {
+            sql.append(" AND LOWER(t.name) LIKE ? ESCAPE '!'");
+            args.add(contains(q));
+        }
         if (!filter.tag().isEmpty()) {
-            sql.append(" AND EXISTS (SELECT 1 FROM tag_sounds ts JOIN tag t ON t.id=ts.tag_id")
-                .append(" WHERE ts.sound_id=s.id AND LOWER(t.name)=?)");
-            values.add(filter.tag());
+            sql.append(" AND LOWER(t.name)=?");
+            args.add(filter.tag());
         }
+        appendSoundMetadata(sql, args, filter);
+        sql.append(" GROUP BY t.id,t.name");
 
-        if (filter.uploaderId() != null) {
-            sql.append(" AND s.user_id=?");
-            values.add(filter.uploaderId());
-        }
-
-        if (filter.minDurationMs() != null) {
-            sql.append(" AND s.duration_ms>=?");
-            values.add(filter.minDurationMs());
-        }
-
-        if (filter.maxDurationMs() != null) {
-            sql.append(" AND s.duration_ms<=?");
-            values.add(filter.maxDurationMs());
-        }
-
-        sql.append(") ranked");
-        if (after != null) {
-            sql.append(" WHERE (sort_rank < ? OR (sort_rank = ? AND (sort_score < ? OR (sort_score = ? AND id < ?))))");
-            values.add(after.rank());
-            values.add(after.rank());
-            values.add(after.score());
-            values.add(after.score());
-            values.add(after.id());
-        }
-
-        sql.append(" ORDER BY sort_rank DESC, sort_score DESC, id DESC LIMIT ?");
-        values.add(limit);
-
-        return database.readSoundRows(sql.toString(), values.toArray());
+        return rankedPage(sql, args, after, limit);
     }
 
     public List<QueryRecord> suggestions(String q, String viewer, int limit) {
@@ -129,6 +193,17 @@ public final class SoundDB {
             ORDER BY CASE WHEN LOWER(s.name) LIKE ? ESCAPE '!' THEN 0 ELSE 1 END,
                 s.plays DESC, s.id DESC LIMIT ?
             """, viewer, "%" + escaped + "%", escaped + "%", limit);
+    }
+
+    public SoundTarget commentTarget(String commentId) {
+        List<QueryRecord> rows = database.readSoundRows("SELECT sound_id,soundboard_id FROM sound_comment WHERE id=?", commentId);
+        if (rows.isEmpty())
+            throw commentMissing();
+
+        QueryRecord row = rows.getFirst();
+        String board = row.get("soundboard_id");
+
+        return board == null ? SoundTarget.sound(row.get("sound_id")) : SoundTarget.soundboard(board);
     }
 
     public List<QueryRecord> tags(String prefix, String viewerId, int limit) {
@@ -354,6 +429,8 @@ public final class SoundDB {
         });
     }
 
+    /* -------------------------------------------------------------------------- */
+
     static Sound.Vote setSoundVote(BotDB database, Connection connection, QueryRecord sound,
             String viewer, int value, boolean enabled) throws SQLException {
         if (SoundVote.fromValue(value) == null)
@@ -366,6 +443,67 @@ public final class SoundDB {
     }
 
     /* -------------------------------------------------------------------------- */
+
+    static String soundText(String query, List<Object> args) {
+        String pattern = contains(query);
+        args.add(pattern);
+        args.add(pattern);
+
+        return """
+            (LOWER(s.name) LIKE ? ESCAPE '!' OR EXISTS (
+                SELECT 1 FROM tag_sounds st JOIN tag term ON term.id=st.tag_id
+                WHERE st.sound_id=s.id AND LOWER(term.name) LIKE ? ESCAPE '!'
+            ))
+            """;
+    }
+
+    private static String contains(String value) {
+        return "%" + BotDB.escapeSoundQuery(value) + "%";
+    }
+
+    private static void appendSoundFilters(StringBuilder sql, List<Object> values, SoundCatalog.Search filter) {
+        if (!filter.tag().isEmpty()) {
+            sql.append(" AND EXISTS (SELECT 1 FROM tag_sounds ts JOIN tag t ON t.id=ts.tag_id")
+                .append(" WHERE ts.sound_id=s.id AND LOWER(t.name)=?)");
+            values.add(filter.tag());
+        }
+
+        appendSoundMetadata(sql, values, filter);
+    }
+
+    private static void appendSoundMetadata(StringBuilder sql, List<Object> values, SoundCatalog.Search filter) {
+        if (filter.uploaderId() != null) {
+            sql.append(" AND s.user_id=?");
+            values.add(filter.uploaderId());
+        }
+
+        if (filter.minDurationMs() != null) {
+            sql.append(" AND s.duration_ms>=?");
+            values.add(filter.minDurationMs());
+        }
+
+        if (filter.maxDurationMs() != null) {
+            sql.append(" AND s.duration_ms<=?");
+            values.add(filter.maxDurationMs());
+        }
+    }
+
+    private List<QueryRecord> rankedPage(StringBuilder sql, List<Object> values, Position after, int limit) {
+        sql.append(") ranked");
+        if (after != null) {
+            sql.append(" WHERE (sort_rank < ? OR (sort_rank = ? AND (sort_score < ? OR (sort_score = ? AND id < ?))))");
+            values.add(after.rank());
+            values.add(after.rank());
+            values.add(after.score());
+            values.add(after.score());
+            values.add(after.id());
+        }
+
+        sql.append(" ORDER BY sort_rank DESC, sort_score DESC, id DESC LIMIT ?");
+        values.add(limit);
+
+        return database.readSoundRows(sql.toString(), values.toArray());
+    }
 
     private QueryRecord soundRow(String id) {
         List<QueryRecord> rows = database.readSounds(List.of(id));
