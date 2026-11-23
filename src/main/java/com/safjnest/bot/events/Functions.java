@@ -1,6 +1,5 @@
 package com.safjnest.bot.events;
 
-import java.util.HashMap;
 import java.util.List;
 
 import com.jagrosh.jdautilities.command.Command;

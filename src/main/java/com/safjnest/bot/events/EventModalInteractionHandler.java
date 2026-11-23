@@ -30,7 +30,6 @@ import com.safjnest.utils.AlertMessage;
 import com.safjnest.utils.SafJNest;
 import com.safjnest.utils.twitch.TwitchClient;
 
-import net.dv8tion.jda.api.EmbedBuilder;
 import net.dv8tion.jda.api.components.buttons.Button;
 import net.dv8tion.jda.api.components.selections.EntitySelectMenu;
 import net.dv8tion.jda.api.entities.Guild;
@@ -47,32 +46,14 @@ public class EventModalInteractionHandler extends ListenerAdapter {
         String id = event.getModalId().split("-", 2)[0];
         
         switch (id) {
-            case "sound":
-                sound(event);
-                break;
-            case "tag":        
-                tag(event);
-                break;
-            case "twitch":
-                twitch(event);
-                break;
-            case "greet":
-                greet(event);
-                break;
-            case "alert":
-                alert(event);
-                break;
-            case "reward":
-                reward(event);
-                break;
-            case "champion":
-                champion(event);
-                break;
-            case "blacklist":
-                blacklist(event);
-                break;
-            default:
-                break;
+            case "sound" -> sound(event);
+            case "tag" -> tag(event);
+            case "twitch" -> twitch(event);
+            case "greet" -> greet(event);
+            case "alert" -> alert(event);
+            case "reward" -> reward(event);
+            case "champion" -> champion(event);
+            case "blacklist" -> blacklist(event);
         }
     }
 

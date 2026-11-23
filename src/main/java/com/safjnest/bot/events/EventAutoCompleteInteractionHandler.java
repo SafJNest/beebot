@@ -121,67 +121,24 @@ public class EventAutoCompleteInteractionHandler extends ListenerAdapter {
 
         
         switch (name) {
-            case "play":
-                choices = playSound(e);
-
-                break;
-            case "user_sound":
-                choices = userSound(e);
-
-                break;
-            case "help":
-                choices = help(e);
-                break;
-
-            case "champion":
-                choices = champion(e);
-                break;
-
-            case "augment":
-                choices = augment(e);
-                break;
-
-            case "soundboard_select":
-                choices = soundboard(e);
-                break;
-            case "sound_remove":
-                choices = soundboardSound(e);
-                break;
-
-            case "greet":
-                choices = greet(e);
-                break;
-            case "jumpto":
-                choices = jump(e);
-                break;
-            case "alert_role":
-                choices = alert(e);
-                break;
-            case "rewards_level":
-                choices = rewardsLevel(e);
-                break;
-            case "reward_roles":
-                choices = rewardRole(e);
-                break;
-            case "personal_summoner":
-                choices = personalSummoner(e);
-                break;
-            case "streamer_name":
-                choices = streamer(e);
-                break;
-            case "item":
-                choices = item(e);
-                break;
-            case "playlist":
-                choices = playlist(e);
-                break;
-            case "playlist_song":
-            case "playlist_order":
-                choices = playlistSong(e);
-                break;
-            case "summoner":
-                choices = summoner(e);
-                break;
+            case "play" -> choices = playSound(e);
+            case "user_sound" -> choices = userSound(e);
+            case "help" -> choices = help(e);
+            case "champion" -> choices = champion(e);
+            case "augment" -> choices = augment(e);
+            case "soundboard_select" -> choices = soundboard(e);
+            case "sound_remove" -> choices = soundboardSound(e);
+            case "greet" -> choices = greet(e);
+            case "jumpto" -> choices = jump(e);
+            case "alert_role" -> choices = alert(e);
+            case "rewards_level" -> choices = rewardsLevel(e);
+            case "reward_roles" -> choices = rewardRole(e);
+            case "personal_summoner" -> choices = personalSummoner(e);
+            case "streamer_name" -> choices = streamer(e);
+            case "item" -> choices = item(e);
+            case "playlist" -> choices = playlist(e);
+            case "playlist_song", "playlist_order" -> choices = playlistSong(e);
+            case "summoner" -> choices = summoner(e);
         }
 
         e.replyChoices(choices).queue();

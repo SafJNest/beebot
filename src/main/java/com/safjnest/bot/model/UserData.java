@@ -8,7 +8,6 @@ import java.util.Map;
 import com.safjnest.bot.Bot;
 import com.safjnest.database.nosql.MongoDB;
 import com.safjnest.exception.Exception;
-import com.safjnest.exception.Exception.Type;
 import com.safjnest.database.sql.QueryRecord;
 import com.safjnest.database.sql.database.BotDB;
 import com.safjnest.lol.model.summoner.Summoner;

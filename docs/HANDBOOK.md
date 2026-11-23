@@ -13,6 +13,22 @@ architecture decision. Report conflicts rather than silently changing owners.
 For LoL code changes, check CodeGraph status, sync a stale index, then inspect
 the affected symbol and its impact before editing.
 
+Choose the graph by the question. Use CodeGraph for symbol/source lookup,
+callers and callees, concrete call paths and change impact. Use Graphify for
+repository overviews, subsystem maps, cross-subsystem connections, and broad
+views that include SQL schemas or indexed documents. Graphify's aggregate edges
+can combine different relationship kinds, so inspect the edge type before
+reading a connection as a direct call. Use both when the task needs both views.
+
+Before relying on either index, check that its CLI is available, that the index
+exists for this checkout, and that it is current. Sync a stale CodeGraph index
+with `codegraph sync` or refresh a stale Graphify graph with `graphify update .`.
+If the preferred tool or index is missing, ask whether the user wants it
+installed or initialized. Continue with the other tool only when it is
+available, initialized and suitable for the current question. If neither is
+ready, ask which one to initialize. Never initialize either silently. For LoL
+code changes, CodeGraph `explore` and `impact` remain mandatory.
+
 ### 1.1 Graphify
 
 Graphify provides a local architecture report and an interactive view of Beebot.

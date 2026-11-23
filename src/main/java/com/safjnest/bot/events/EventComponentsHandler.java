@@ -4,7 +4,6 @@ package com.safjnest.bot.events;
 import java.awt.Color;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.stream.Collectors;
 
 import com.safjnest.bot.audio.PlayerManager;
 import com.safjnest.bot.audio.TrackData;
@@ -62,25 +61,20 @@ import net.dv8tion.jda.api.modals.Modal;
       String args = event.getComponentId().split("-", 3).length > 2 ? event.getComponentId().split("-", 3)[2] : "";
 
       switch (type) {
-        case "alert":
+        case "alert" -> {
           alert(event, innerType, args);
           return;
-        case "blacklist":
+        }
+        case "blacklist" -> {
           blacklist(event, innerType, args);
           return;
-        default:
-          break;
+        }
       }
 
       event.deferEdit().queue();
       switch (type) {
-        case "spotify":
-          spotify(event, innerType, args);
-          break;
-        case "soundboard":
-          soundboard(event, innerType);
-        default:
-          break;
+        case "spotify" -> spotify(event, innerType, args);
+        case "soundboard" -> soundboard(event, innerType);
       }
     }
 
@@ -100,19 +94,16 @@ import net.dv8tion.jda.api.modals.Modal;
 
       
       switch (innerType) {
-        case "left":
+        case "left" -> {
           if (currentIndex > 0)
             currentIndex -= 5;
-          break;
-        case "right":
+        }
+        case "right" ->
           currentIndex += 5;
-          break;
-        case "type":
+        case "type" -> {
           currentType = SpotifyMessageType.valueOf(args.toUpperCase());
           currentIndex = 0;
-          break;
-        default:
-          break;
+        }
       }
 
       SpotifyMessage.send(event.getHook(), 

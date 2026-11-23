@@ -10,7 +10,6 @@ import net.dv8tion.jda.api.interactions.commands.build.OptionData;
 
 import com.safjnest.bot.cache.managers.GuildCache;
 import com.safjnest.bot.model.guild.alert.AlertType;
-import com.safjnest.database.sql.database.BotDB;
 import com.safjnest.utils.BotCommand;
 import com.safjnest.utils.CommandsLoader;
 import com.safjnest.utils.twitch.TwitchClient;

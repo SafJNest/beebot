@@ -108,17 +108,37 @@ Read these files before changing LoL architecture:
 2. `docs/architecture/README.md`;
 3. the relevant accepted ADR;
 4. `docs/HANDBOOK.md` §5-§7 for operational steps (command/endpoint/service/model/queue/mongo/cache);
-5. **CodeGraph** — `codegraph status` → if stale `codegraph sync` → `codegraph explore <symbol>` + `codegraph impact <symbol>` for blast radius before touching code.
+5. **CodeGraph / Graphify** — choose the graph by task using the workflow below. For LoL code changes, CodeGraph `status` → if stale `sync` → `explore` + `impact` remains mandatory before editing.
 
 The source-of-truth agent proposes and maintains architecture decisions. The main agent reviews ownership, boundaries, tests and the handoff before approving the next task.
 
 Global agents (Cursor / Claude Code / Codex / Opencode) live in `.agents/agents/` (canonical) and are shimmed to `.cursor/rules/`, `.claude/agents/`, `.codex/agents/`, `.opencode/agent/`. Skills live in `.agents/skills/beebot-handbook/`. Never edit the shim — edit `.agents/agents/*.md`.
 
-CodeGraph is mandatory: no LoL change without up-to-date `explore`/`impact`. If `codegraph status` reports a stale or missing index, the agent must sync before proceeding.
+### CodeGraph and Graphify
 
-Use [Graphify](docs/HANDBOOK.md#11-graphify) for architecture overviews and
-subsystem maps. Refresh its local graph before relying on it. Use CodeGraph for
-structural code questions and LoL impact checks.
+Before using either graph, check that its CLI is available and that the index
+exists for this checkout. Then check freshness. Use a fresh initialized index;
+sync/update a stale one before relying on it.
+
+- Use CodeGraph for symbol definitions and source, callers/callees, concrete
+  call flows (including callbacks), and change-impact analysis. For LoL code
+  changes, CodeGraph `explore` and `impact` are mandatory.
+- Use Graphify for broad repository orientation, subsystem/community maps,
+  cross-subsystem connections, and views that include SQL schemas or indexed
+  documentation. Treat paths as mixed relationships unless their edge types
+  establish a direct call.
+- If the task needs both local detail and an architecture overview, use both
+  after checking that each index is initialized and current.
+- If the preferred graph is missing or its CLI is unavailable, ask the user
+  whether they want it initialized/installed. For current work, continue with
+  the other graph if it is available and initialized, and state that fallback.
+  Do not initialize a missing index silently. If neither graph is available,
+  ask which one they want initialized before depending on graph results.
+- Never treat one graph as proof of completeness. In particular, a Graphify
+  community edge is an aggregate relationship and can omit individual or
+  dynamically dispatched calls.
+
+See [Graphify setup and commands](docs/HANDBOOK.md#11-graphify).
 
 Agents must stop and report a conflict instead of silently changing an ADR or an unrelated owner.
 
