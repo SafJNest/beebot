@@ -359,7 +359,7 @@ import no.stelar7.api.r4j.pojo.shared.RiotAccount;
 
     public static boolean updateSummonerMongo(Summoner summoner) {
         if (summoner == null) return false;
-        return MongoDB.upsertSummoner(summoner, null);
+        return MongoDB.upsertSummoner(summoner);
     }
 
 //     ▄███████▄  ▄█   ▄████████

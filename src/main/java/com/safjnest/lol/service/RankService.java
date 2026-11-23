@@ -133,7 +133,7 @@ public final class RankService {
             }
             var summoner = SummonerService.getRiotSummoner(entry.getPuuid(), shard);
             if (summoner == null) return;
-            if (SummonerService.find(entry.getPuuid(), shard) == null && !SummonerService.upsert(summoner, null)) return;
+            if (SummonerService.find(entry.getPuuid(), shard) == null && !SummonerService.upsert(summoner)) return;
         }
         GameQueueType queue = GameQueueTypeUtils.canonicalQueue(entry.getQueueType());
         Rank rank = toRank(entry);

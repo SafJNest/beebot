@@ -2295,16 +2295,11 @@ public final class MongoDB {
         return upsert || result.getMatchedCount() > 0;
     }
 
-    public static boolean upsertSummoner(Summoner summoner, String userId) {
+    public static boolean upsertSummoner(Summoner summoner) {
         if (summoner == null || summoner.puuid() == null) return false;
-        if (userId != null) {
-            Document current = summoners().find(Filters.eq("_id", summoner.puuid()))
-                    .projection(Projections.include("userId")).first();
-            String owner = current == null ? null : current.getString("userId");
-            if (owner != null && !owner.equals(userId)) return false;
-        }
-        traceRead("summoner.upsert", "puuid=" + summoner.puuid() + " userId=" + userId);
-        return summoners().updateOne(Filters.eq("_id", summoner.puuid()), summonerUpdate(summoner, userId),
+
+        traceRead("summoner.upsert", "puuid=" + summoner.puuid());
+        return summoners().updateOne(Filters.eq("_id", summoner.puuid()), summonerUpdate(summoner, false),
                 new UpdateOptions().upsert(true)).wasAcknowledged();
     }
 
@@ -2323,18 +2318,13 @@ public final class MongoDB {
         return value instanceof Number number ? number.longValue() : 0;
     }
 
-    public static boolean upsertSummoner(String puuid, LeagueShard shard, String riotId, int level, int icon, String userId) {
-        if (puuid == null || puuid.isBlank() || shard == null) return false;
-        return upsertSummoner(new Summoner(puuid, riotId, shard, level, icon), userId);
-    }
-
     public static boolean upsertSummoner(MatchParticipant participant, LeagueShard shard) {
         if (participant == null || participant.getPuuid() == null || participant.getPuuid().isBlank() || shard == null) return false;
         String riotId = participant.getRiotIdName();
         String riotTag = participant.getRiotIdTagline();
         if (riotId != null && !riotId.isBlank() && riotTag != null && !riotTag.isBlank()) riotId += "#" + riotTag;
         Summoner summoner = new Summoner(participant.getPuuid(), riotId, shard, participant.getSummonerLevel(), participant.getProfileIcon());
-        return summoners().updateOne(Filters.eq("_id", summoner.puuid()), summonerUpdate(summoner, null, true),
+        return summoners().updateOne(Filters.eq("_id", summoner.puuid()), summonerUpdate(summoner, true),
             new UpdateOptions().upsert(true)).wasAcknowledged();
     }
 
@@ -2354,7 +2344,7 @@ public final class MongoDB {
         List<WriteModel<Document>> operations = new ArrayList<>(summoners.size());
         for (Summoner summoner : summoners) {
             if (summoner == null || summoner.puuid() == null || summoner.puuid().isBlank()) continue;
-            operations.add(new UpdateOneModel<>(Filters.eq("_id", summoner.puuid()), summonerUpdate(summoner, null),
+            operations.add(new UpdateOneModel<>(Filters.eq("_id", summoner.puuid()), summonerUpdate(summoner, false),
                     new UpdateOptions().upsert(true)));
         }
         if (!operations.isEmpty()) bulkWrite(summoners(), operations);
@@ -2382,14 +2372,32 @@ public final class MongoDB {
         return true;
     }
 
-    public static boolean detachSummonerUser(String puuid, String userId) {
-        return summoners().updateOne(Filters.and(Filters.eq("_id", puuid), Filters.eq("userId", userId)),
-                Updates.combine(Updates.unset("userId"), Updates.set("tracking", false))).getMatchedCount() > 0;
+    public static Summoner attachSummonerUser(String puuid, String userId, boolean tracking) {
+        Document linked = summoners().findOneAndUpdate(
+                Filters.and(Filters.eq("_id", puuid), Filters.eq("userId", null)),
+                Updates.combine(Updates.set("userId", userId), Updates.set("tracking", tracking)),
+                new com.mongodb.client.model.FindOneAndUpdateOptions()
+                        .returnDocument(com.mongodb.client.model.ReturnDocument.AFTER));
+
+        return linked == null ? null : readSummoner(record(linked));
     }
 
-    public static boolean setSummonerTracking(String puuid, String userId, boolean tracked) {
-        return summoners().updateOne(Filters.and(Filters.eq("_id", puuid), Filters.eq("userId", userId)),
-                Updates.set("tracking", tracked)).getMatchedCount() > 0;
+    public static Summoner detachSummonerUser(String puuid, String userId) {
+        Document previous = summoners().findOneAndUpdate(
+                Filters.and(Filters.eq("_id", puuid), Filters.eq("userId", userId)),
+                Updates.combine(Updates.unset("userId"), Updates.set("tracking", false)));
+
+        return previous == null ? null : readSummoner(record(previous));
+    }
+
+    public static Summoner setSummonerTracking(String puuid, String userId, boolean tracked) {
+        Document updated = summoners().findOneAndUpdate(
+                Filters.and(Filters.eq("_id", puuid), Filters.eq("userId", userId)),
+                Updates.set("tracking", tracked),
+                new com.mongodb.client.model.FindOneAndUpdateOptions()
+                        .returnDocument(com.mongodb.client.model.ReturnDocument.AFTER));
+
+        return updated == null ? null : readSummoner(record(updated));
     }
 
     public static boolean upsertRanks(String puuid, LeagueShard shard, Map<GameQueueType, Rank> ranks) {
@@ -4131,13 +4139,11 @@ public final class MongoDB {
         return document;
     }
 
-    private static Bson summonerUpdate(Summoner summoner, String userId) {
-        return summonerUpdate(summoner, userId, false);
-    }
-
-    private static Bson summonerUpdate(Summoner summoner, String userId, boolean historical) {
+    private static Bson summonerUpdate(Summoner summoner, boolean historical) {
         Document fields = write(summoner);
         fields.remove("_id");
+        fields.remove("userId");
+        fields.remove("tracking");
         Object ranks = fields.remove("ranks");
         List<Bson> updates = new ArrayList<>(fields.size() + 2);
         for (Map.Entry<String, Object> field : fields.entrySet())
@@ -4146,7 +4152,6 @@ public final class MongoDB {
         if (ranks instanceof Document rankValues && !rankValues.isEmpty()) updates.add(Updates.set("ranks", rankValues));
         String riotSearch = normalizedRiotId(summoner.riotId());
         if (!riotSearch.isBlank()) updates.add(historical ? Updates.setOnInsert("riotSearch", riotSearch) : Updates.set("riotSearch", riotSearch));
-        if (userId != null) updates.add(Updates.set("userId", userId));
         return Updates.combine(updates);
     }
 

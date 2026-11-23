@@ -83,7 +83,7 @@ public final class SummonerService {
             : getRiotSummonerAsync(puuid, shard).thenApply(ignored -> find(puuid, shard));
     }
 
-    static CompletableFuture<Summoner> getSummonerAsync(String name, String tag, LeagueShard shard) {
+    public static CompletableFuture<Summoner> getSummonerAsync(String name, String tag, LeagueShard shard) {
         return getPuuidByRiotIdAsync(name, tag, shard).thenCompose(puuid -> puuid == null
             ? CompletableFuture.completedFuture(null)
             : getSummonerAsync(puuid, shard));
@@ -200,12 +200,7 @@ public final class SummonerService {
             : saveAsync(summoner, priority).thenApply(ignored -> summoner));
     }
 
-    public static boolean upsert(Summoner summoner, String userId) {
-        if (summoner == null || summoner.puuid() == null || summoner.region() == null) return false;
-        return MongoDB.upsertSummoner(summoner, userId);
-    }
-
-    public static boolean upsert(no.stelar7.api.r4j.pojo.lol.summoner.Summoner summoner, String userId) {
+    public static boolean upsert(no.stelar7.api.r4j.pojo.lol.summoner.Summoner summoner) {
         if (summoner == null || summoner.getPUUID() == null || summoner.getPlatform() == null) return false;
 
         String riotId = MongoDB.findSummonerName(summoner.getPUUID(), summoner.getPlatform());
@@ -213,7 +208,7 @@ public final class SummonerService {
             RiotAccount account = getRiotAccount(summoner.getPUUID(), summoner.getPlatform());
             if (account != null) riotId = account.getName() + "#" + account.getTag();
         }
-        return persist(summoner, riotId, userId) != null;
+        return persist(summoner, riotId) != null;
     }
 
     public static String getUserId(String puuid, LeagueShard shard) {
@@ -490,7 +485,7 @@ public final class SummonerService {
         }
 
         String riotId = account == null ? null : account.getName() + "#" + account.getTag();
-        Summoner profile = store(persist(source, riotId, null), source.getPlatform());
+        Summoner profile = store(persist(source, riotId), source.getPlatform());
         if (profile == null) return CompletableFuture.completedFuture(RefreshResult.ignored());
 
         LeagueShard sourceShard = source.getPlatform();
@@ -600,18 +595,17 @@ public final class SummonerService {
             JobPriority priority) {
         String riotId = MongoDB.findSummonerName(source.getPUUID(), source.getPlatform());
         if (riotId != null && !riotId.isBlank()) return CompletableFuture.completedFuture(store(
-            persist(source, riotId, null), source.getPlatform()));
+            persist(source, riotId), source.getPlatform()));
 
         return getRiotAccountAsync(source.getPUUID(), source.getPlatform(), priority).thenApply(account -> store(
-            persist(source, account == null ? null : account.getName() + "#" + account.getTag(), null),
+            persist(source, account == null ? null : account.getName() + "#" + account.getTag()),
             source.getPlatform()
         ));
     }
 
     private static Summoner persist(
             no.stelar7.api.r4j.pojo.lol.summoner.Summoner source,
-            String riotId,
-            String userId) {
+            String riotId) {
         Summoner result = new Summoner(
             source.getPUUID(),
             riotId,
@@ -619,7 +613,7 @@ public final class SummonerService {
             source.getSummonerLevel(),
             source.getProfileIconId()
         );
-        if (!MongoDB.upsertSummoner(result, userId)) return null;
+        if (!MongoDB.upsertSummoner(result)) return null;
         RedisClient.delete(RedisKey.R4J_SUMMONER_NOT_FOUND.of(result.region().name(), result.puuid()));
         if (valid(result.name(), result.tag(), result.region()))
             RedisClient.delete(accountNotFoundKey(result.name(), result.tag(), result.region()));

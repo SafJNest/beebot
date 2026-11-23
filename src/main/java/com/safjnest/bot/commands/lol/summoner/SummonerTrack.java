@@ -5,8 +5,7 @@ import java.util.Arrays;
 import com.jagrosh.jdautilities.command.SlashCommand;
 import com.jagrosh.jdautilities.command.SlashCommandEvent;
 import com.safjnest.bot.cache.managers.UserCache;
-import com.safjnest.bot.model.UserData;
-import com.safjnest.database.nosql.MongoDB;
+import com.safjnest.lol.model.summoner.Summoner;
 import com.safjnest.utils.BotCommand;
 import com.safjnest.utils.CommandsLoader;
 
@@ -52,17 +51,15 @@ public class SummonerTrack extends SlashCommand {
             return;
         }
 
-        UserData data = UserCache.getUser(event.getMember().getId());
-        if (!data.getRiotAccounts().containsKey(account_id)) {
+        Summoner updated = UserCache.withUser(event.getUser().getId(), user -> {
+            return user.setRiotAccountTracking(account_id, track);
+        });
+
+        if (updated == null) {
             event.deferReply(false).addContent("This account is not connected to your profile.").queue();
             return;
         }
 
-        if (!MongoDB.setSummonerTracking(account_id, event.getMember().getId(), track)) {
-            event.deferReply(false).addContent("Something went wrong while updating tracking.").queue();
-            return;
-        }
-        
         String response = track ? "Tracking enabled" : "Tracking disabled";
         event.deferReply(false).addContent(response).queue();
 	}

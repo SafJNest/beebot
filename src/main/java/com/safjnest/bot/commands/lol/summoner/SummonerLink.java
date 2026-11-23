@@ -5,10 +5,8 @@ import java.util.Arrays;
 import com.jagrosh.jdautilities.command.SlashCommand;
 import com.jagrosh.jdautilities.command.SlashCommandEvent;
 import com.safjnest.bot.cache.managers.UserCache;
-import com.safjnest.bot.model.UserData;
 import com.safjnest.lol.LeagueHandler;
 import com.safjnest.lol.model.summoner.Summoner;
-import com.safjnest.lol.service.SummonerService;
 import com.safjnest.lol.utils.LeagueShardUtils;
 import com.safjnest.utils.BotCommand;
 import com.safjnest.utils.CommandsLoader;
@@ -58,21 +56,21 @@ public class SummonerLink extends SlashCommand {
 
         String name = event.getOption("summoner").getAsString();
 
-        UserData data = UserCache.getUser(event.getMember().getId());
-        if(data.getRiotAccounts().containsKey(s.puuid())){
-            event.getHook().editOriginal("This account is already connected to your profile.").queue();
-            return;
-        }
+        String userId = event.getUser().getId();
+        Summoner linked = UserCache.withUser(userId, user -> {
+            return user.addRiotAccount(s.puuid(), false);
+        });
 
-        if (SummonerService.getUserId(s.puuid(), s.region()) != null) {
-            event.getHook().editOriginal("This account is already connected to another profile.\nIf you think someone has linked your account please write to our discord server support or use /bug").queue();
-            return;
-        }
+        if (linked == null) {
+            boolean alreadyLinked = UserCache.withUser(userId, user -> {
+                return user.getRiotAccounts().containsKey(s.puuid());
+            });
 
-       
+            String response = alreadyLinked
+                ? "This account is already connected to your profile."
+                : "This account is already connected to another profile.\nIf you think someone has linked your account please write to our discord server support or use /bug";
 
-        if (!data.addRiotAccount(s)) {
-            event.getHook().editOriginal("Something went wrong while connecting your account.").queue();
+            event.getHook().editOriginal(response).queue();
             return;
         }
 

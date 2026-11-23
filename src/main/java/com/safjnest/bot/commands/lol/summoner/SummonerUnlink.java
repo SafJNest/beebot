@@ -5,7 +5,6 @@ import java.util.Arrays;
 import com.jagrosh.jdautilities.command.SlashCommand;
 import com.jagrosh.jdautilities.command.SlashCommandEvent;
 import com.safjnest.bot.cache.managers.UserCache;
-import com.safjnest.bot.model.UserData;
 import com.safjnest.utils.BotCommand;
 import com.safjnest.utils.CommandsLoader;
 
@@ -52,14 +51,12 @@ public class SummonerUnlink extends SlashCommand {
             return;
         }
 
-        UserData data = UserCache.getUser(event.getMember().getId());
-        if (!data.getRiotAccounts().containsKey(puuid)) {
-            event.deferReply(false).addContent("This account is not connected to your profile.").queue();
-            return;
-        }
+        boolean removed = UserCache.withUser(event.getUser().getId(), user -> {
+            return user.deleteRiotAccount(puuid);
+        });
 
-        if (!data.deleteRiotAccount(puuid)) {
-            event.deferReply(false).addContent("Something went wrong while disconnecting your account.").queue();
+        if (!removed) {
+            event.deferReply(false).addContent("This account is not connected to your profile.").queue();
             return;
         }
 

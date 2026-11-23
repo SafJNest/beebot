@@ -1,5 +1,6 @@
 package com.safjnest.bot.model;
 
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -16,7 +17,6 @@ import com.safjnest.status.log.BotLogger;
 import com.safjnest.status.log.LoggerIDpair;
 
 import net.dv8tion.jda.api.entities.User;
-import no.stelar7.api.r4j.basic.constants.api.regions.LeagueShard;
 
 public class UserData {
     
@@ -244,46 +244,56 @@ public class UserData {
 //  █████▄▄██   ██████████   ███    █▀    ████████▀  ████████▀    ██████████ 
 //  ▀                                                                        
 
-    private void retriveRiotAccounts() {
-        this.riotAccounts = new LinkedHashMap<>();
-        for (QueryRecord row : MongoDB.findAccountsByUserId(USER_ID)) {
-            Summoner summoner = MongoDB.read(row, Summoner.class);
-            if (summoner != null && summoner.puuid() != null) riotAccounts.put(summoner.puuid(), summoner);
+    public synchronized Map<String, Summoner> getRiotAccounts() {
+        if (riotAccounts == null) {
+            LinkedHashMap<String, Summoner> accounts = new LinkedHashMap<>();
+
+            for (QueryRecord row : MongoDB.findAccountsByUserId(USER_ID)) {
+                Summoner summoner = MongoDB.read(row, Summoner.class);
+                if (summoner != null && summoner.puuid() != null)
+                    accounts.put(summoner.puuid(), summoner);
+            }
+
+            riotAccounts = accounts;
         }
+
+        return Collections.unmodifiableMap(new LinkedHashMap<>(riotAccounts));
     }
 
-    private void checkRiotAccounts() {
-        if (riotAccounts == null) retriveRiotAccounts();
+    public synchronized Summoner addRiotAccount(String puuid, boolean tracking) {
+        Summoner linked = MongoDB.attachSummonerUser(puuid, USER_ID, tracking);
+        if (linked == null)
+            return null;
+
+        if (riotAccounts != null)
+            riotAccounts.put(puuid, linked);
+        SummonerService.invalidate(puuid, linked.region());
+
+        return linked;
     }
 
+    public synchronized boolean deleteRiotAccount(String puuid) {
+        Summoner previous = MongoDB.detachSummonerUser(puuid, USER_ID);
+        if (previous == null)
+            return false;
 
-    public Map<String, Summoner> getRiotAccounts() {
-        checkRiotAccounts();
-        return riotAccounts;
-    }
-
-    public boolean addRiotAccount(Summoner s) {
-        checkRiotAccounts();
-        boolean result = SummonerService.upsert(s, USER_ID);
-        if (result) {
-            riotAccounts.put(s.puuid(), s);
-            SummonerService.invalidate(s.puuid(), s.region());
-        }
-        
-        return result;
-    }
-
-    public boolean deleteRiotAccount(String puuid) {
-        checkRiotAccounts();
-        Summoner summoner = riotAccounts.get(puuid);
-        LeagueShard region = summoner == null ? null : summoner.region();
-        boolean result = MongoDB.detachSummonerUser(puuid, USER_ID);
-        if (result) {
+        if (riotAccounts != null)
             riotAccounts.remove(puuid);
-            if (region != null) SummonerService.invalidate(puuid, region);
-        }
-        
-        return result;
+        SummonerService.invalidate(puuid, previous.region());
+
+        return true;
+    }
+
+    public synchronized Summoner setRiotAccountTracking(String puuid, boolean tracking) {
+        Summoner updated = MongoDB.setSummonerTracking(puuid, USER_ID, tracking);
+        if (updated == null)
+            return null;
+
+        if (riotAccounts != null)
+            riotAccounts.put(puuid, updated);
+        SummonerService.invalidate(puuid, updated.region());
+
+        return updated;
     }
 
 }

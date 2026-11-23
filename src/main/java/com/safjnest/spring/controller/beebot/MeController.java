@@ -1,11 +1,14 @@
 package com.safjnest.spring.controller.beebot;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletionException;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.safjnest.bot.cache.managers.SoundCache;
@@ -18,30 +21,43 @@ import com.safjnest.discord.auth.DiscordApi.AuthUser;
 import com.safjnest.discord.auth.DiscordApi.Server;
 import com.safjnest.discord.auth.DiscordAuthService.AuthContext;
 import com.safjnest.discord.auth.DiscordAuthService;
+import com.safjnest.lol.model.summoner.LinkedSummoner;
+import com.safjnest.lol.model.summoner.Summoner;
+import com.safjnest.lol.service.SummonerService;
+import com.safjnest.lol.utils.LeagueShardUtils;
 import com.safjnest.sound.model.Sound;
 import com.safjnest.spring.config.AuthFilter;
 import com.safjnest.utils.ValidationUtils;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.ModelAttribute;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestAttribute;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import jakarta.servlet.http.HttpServletResponse;
+import no.stelar7.api.r4j.basic.constants.api.regions.LeagueShard;
 
 @RestController
 @RequestMapping("/api/beebot")
 public class MeController {
+
+    private static final String LOL_ACCOUNT = "/me/lol/account";
 
     private final DiscordAuthService auth;
     private final SoundCache sounds;
     private final UserCache users;
     private final BotDB database;
 
-    public record Me(AuthUser user, List<Server> servers, Map<String, Sound> greets) {}
+    public record Me(AuthUser user, List<Server> servers, Map<String, Sound> greets,
+            List<LinkedSummoner> riotAccounts) {}
     public record GreetSettings(Map<String, GreetResult> greets) {}
     public record GreetResult(String status, List<GreetError> errors) {}
     public record GreetError(String field, String code, String message) {}
@@ -67,8 +83,87 @@ public class MeController {
     public Me me(@RequestAttribute(AuthFilter.AUTH_CONTEXT) AuthContext auth) {
         SoundCache.Context context = context(auth);
         Map<String, String> configured = users.with(context.userId(), user -> user.getAllGreets());
+        List<LinkedSummoner> riotAccounts = users.with(context.userId(), user -> {
+            List<LinkedSummoner> accounts = new ArrayList<>();
 
-        return new Me(auth.user(), this.auth.servers(auth), sounds.greets(context, configured));
+            for (Summoner summoner : user.getRiotAccounts().values())
+                accounts.add(LinkedSummoner.from(summoner));
+
+            return List.copyOf(accounts);
+        });
+
+        return new Me(auth.user(), this.auth.servers(auth), sounds.greets(context, configured), riotAccounts);
+    }
+
+    @PostMapping(LOL_ACCOUNT)
+    @ResponseStatus(HttpStatus.CREATED)
+    public LinkedSummoner linkAccount(@RequestAttribute(AuthFilter.AUTH_CONTEXT) AuthContext auth,
+            @RequestBody(required = false) JsonNode body) {
+        String userId = userId(auth);
+        if (body == null || !body.isObject() || body.size() != (body.has("tracking") ? 3 : 2))
+            throw Exception.invalidRequest("riotId and region are required, with optional tracking");
+
+        String[] riotId = requiredText(body, "riotId").split("#", -1);
+        if (riotId.length != 2 || riotId[0].isBlank() || riotId[1].isBlank())
+            throw Exception.invalidRequest("Riot ID must have the form Name#Tag");
+
+        LeagueShard shard = region(requiredText(body, "region"));
+        boolean tracking = body.has("tracking") && tracking(body);
+
+        Summoner target;
+        try {
+            target = SummonerService.getSummonerAsync(riotId[0].strip(), riotId[1].strip(), shard).join();
+        } catch (CompletionException failure) {
+            throw new Exception(Type.UNAVAILABLE, "riot_unavailable", "Cannot resolve the Riot profile", failure, null);
+        }
+
+        if (target == null)
+            throw new Exception(Type.NOT_FOUND, "summoner_not_found", "Riot profile not found in this region");
+
+        Summoner linked = users.with(userId, user -> {
+            return user.addRiotAccount(target.puuid(), tracking);
+        });
+
+        if (linked == null)
+            throw new Exception(Type.CONFLICT, "account_already_linked", "Riot profile is already linked");
+
+        return LinkedSummoner.from(linked);
+    }
+
+    @PatchMapping(LOL_ACCOUNT)
+    public LinkedSummoner trackAccount(@RequestAttribute(AuthFilter.AUTH_CONTEXT) AuthContext auth,
+            @RequestBody(required = false) JsonNode body) {
+        String userId = userId(auth);
+        if (body == null || !body.isObject() || body.size() != 2)
+            throw Exception.invalidRequest("puuid and tracking are required");
+
+        String puuid = requiredText(body, "puuid");
+        boolean tracking = tracking(body);
+
+        Summoner updated = users.with(userId, user -> {
+            return user.setRiotAccountTracking(puuid, tracking);
+        });
+
+        if (updated == null)
+            throw accountNotLinked();
+
+        return LinkedSummoner.from(updated);
+    }
+
+    @DeleteMapping(LOL_ACCOUNT)
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void unlinkAccount(@RequestAttribute(AuthFilter.AUTH_CONTEXT) AuthContext auth,
+            @RequestParam("puuid") String puuid) {
+        String userId = userId(auth);
+        if (puuid.isBlank())
+            throw Exception.invalidRequest("puuid is required");
+
+        boolean removed = users.with(userId, user -> {
+            return user.deleteRiotAccount(puuid.strip());
+        });
+
+        if (!removed)
+            throw accountNotLinked();
     }
 
     @PostMapping("/me/settings")
@@ -141,9 +236,44 @@ public class MeController {
     /* -------------------------------------------------------------------------- */
 
     private SoundCache.Context context(AuthContext auth) {
+        return sounds.context(userId(auth));
+    }
+
+    private static String userId(AuthContext auth) {
         if (auth == null || auth.user() == null)
             throw new Exception(Type.UNAUTHENTICATED, "invalid_session", "User session required");
 
-        return sounds.context(auth.user().id());
+        return auth.user().id();
+    }
+
+    private static String requiredText(JsonNode body, String field) {
+        JsonNode value = body.path(field);
+        if (!value.isTextual() || value.asText().isBlank())
+            throw Exception.invalidRequest(field + " must be a non-empty string");
+
+        return value.asText().strip();
+    }
+
+    private static LeagueShard region(String value) {
+        String name = value.toUpperCase(Locale.ROOT);
+
+        for (LeagueShard shard : LeagueShardUtils.getActives()) {
+            if (shard.name().equals(name))
+                return shard;
+        }
+
+        throw Exception.invalidRequest("Unsupported League of Legends region");
+    }
+
+    private static boolean tracking(JsonNode body) {
+        JsonNode value = body.path("tracking");
+        if (!value.isBoolean())
+            throw Exception.invalidRequest("tracking must be a boolean");
+
+        return value.asBoolean();
+    }
+
+    private static Exception accountNotLinked() {
+        return new Exception(Type.NOT_FOUND, "account_not_linked", "Riot profile is not linked to your account");
     }
 }
