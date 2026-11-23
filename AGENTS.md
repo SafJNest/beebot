@@ -1,151 +1,54 @@
 # Beebot agent instructions
 
-## Repository context
+Codex, Claude Code and Gemini CLI use this file as the shared starting point.
+When the owner explicitly asks for the [Beebot agent](.agents/agents/beebot-agent.md),
+use the project role registered as `beebot agent` in Codex or `beebot-agent`
+in Claude Code and Gemini CLI.
 
-This repository contains Shopify integrations, Java services, GraphQL integrations, Algolia, MySQL/MariaDB, Redis, Express and LoL API code.
+## Find the code
 
-Java code uses the `com.safjnest` package. LoL domain models belong under `com.safjnest.lol.model`; Spring owns controllers, configuration and HTTP errors only.
+- Start with the current checkout and `git status --short`. For a known route, command, class or method, use CodeGraph to find the source, callers, callees and impact. For a cross-subsystem question or an unknown entry point, use Graphify to orient yourself, then CodeGraph for the specific call path. Keep the query focused and read only the relevant implementations.
+- Check that the chosen CLI and its index exist in this checkout. Use `codegraph status` and `codegraph sync` if stale. For Graphify, compare the commit in `graphify-out/GRAPH_REPORT.md` with the checkout, account for local source edits and use `graphify update .` if stale. Ask before installing either tool or initializing a missing index. Use the other tool if it is ready and suits the question.
+- For LoL code changes, run CodeGraph `explore` and `impact` before editing. Use `trace` for a concrete flow where available. Read the specific file if the index is stale, the symbol is unresolved or an annotation, configuration or dynamic call is outside the graph. Graphify edges can combine calls, containment and other relationships.
+- For HTTP, start with method and route. Read the controller, auth filters, validation and the service or query that determines the result. Follow the response model and serialization for the wire shape. For Discord, follow command registration, the handler and the shared owner. Use the real SQL schema and migrations for persistence assumptions.
+- Read [accepted decisions](docs/architecture/README.md) when changing ownership, architecture or an invariant they cover. Read the [operations guide](docs/configuration.md) for deploy, credentials, storage and indexes. Local agent references to archived docs should defer to this file. Use the canonical local agent definition when editing an agent, and leave tool-specific shims alone.
 
-Primary stack:
+## How to work
 
-- Shopify Liquid, CSS, vanilla JavaScript and Custom Elements;
-- Java backend;
-- GraphQL Storefront API;
-- Algolia;
-- MySQL/MariaDB and Redis with Jedis 5.1.0;
-- Express and Next.js for LoL dashboards.
-
-## JavaScript style
-
-- Treat Custom Elements as Java-like classes with explicit structure.
-- Use the member order: static constants, getters/setters, static factory, constructor, lifecycle callbacks, other methods.
-- Do not use private `#` fields.
-- Prefer inline conditionals with `&&` and `!condition &&` when they remain readable.
-- Use `async`/`await`, never `.then()`.
-- Use `try/catch` in `connectedCallback` when lifecycle work is asynchronous.
-- Fetch with `res.text()` and `DOMParser` where the existing integration requires parsed HTML.
-- Keep magic numbers in static class constants.
-- Build `parts[]` with one `innerHTML` assignment instead of repeated DOM appends.
-- Prefer CSS selectors and pseudo-classes for state; use JavaScript only for dynamic numeric CSS custom properties.
+- “Solo analisi”, “ragioniamo” or “dimmi cosa faresti” calls for inspection and examples. For a substantial change, show the current path, the proposed path, file moves or removals and how to verify it. An explicit implementation request or “procedi” authorizes the agreed work. After a correction, adjust the affected part of the diff and preserve useful existing work.
+- During a design discussion, “potresti riscrivere tutta la classe” describes an option. Explain the change and its impact first. Start editing when the owner requests implementation.
+- Trace the same use case through Discord, Spring, cache, domain and persistence before deciding where it belongs. Reuse existing owners, helpers, parsers and enum resolvers. Share behavior when semantics agree, including permissions, error handling and lifecycle. Migrate callers before removing old code. Add a layer when it gives a responsibility a clear home.
+- Preserve local edits and established public contracts. A data change preserves command syntax, embeds, field order, text, formatting and layout unless the task authorizes a presentation change. Update affected callers with a contract change. Give method, URL, auth, defaults, request and response examples when the task needs a frontend handoff. Derive endpoint reference material from the implementation.
+- Check failures, concurrency and existing data when touching state. Keep transactions at the smallest unit that has to succeed together. Publish cached state after persistence. Check the actual MariaDB dialect and column types, measure query plans before optimizing, and distinguish SQL time from HTTP wait time.
+- Review the diff for incidental changes. Report what was verified in code, build or local tests and what was verified in a real environment. Keep credentials and sensitive settings out of commits, output, documentation and memory.
+- Commit only the phase the owner explicitly requests. A local commit and push have separate authorization. At the end of a refactor phase say “fai commit prima che inzii con una nuova fase refactor”.
 
 ## Java style
 
-- Use switch expressions with `->` and grouped cases.
-- Use static utility classes for stateless utilities.
-- Prefer static factories for conversions and model construction.
-- Use `final` for immutable fields.
-- Name singleton fields `instance`, including `static final` singleton fields.
-- Use `List.of` or `Arrays.asList` for static constants.
-- Do not use Lombok in operational classes.
-- Do not introduce dependency injection frameworks.
-- Do not wrap values in `Optional`.
-- Prefer a loop when it is clearer than a stream.
-- Use explicit types for local variables. `var` is permitted only inside lambdas when it improves readability.
-- Separate logical steps with blank lines: guards, data preparation, loading/grouping, transformation and the final return. Keep related declarations together.
-- Put the bodies of `if`, `else`, `for` and `while` on the following indented lines, even for a single statement. Avoid compressed one-line control flow.
-- Avoid unnecessary refactors and comments.
+- Use explicit local types and imports. Use `var` only in a lambda if it improves readability. Use lowercase `instance` for singleton fields and `final` for immutable fields. Prefer static factories and stateless utilities. Use switch expressions with `->` and comma-separated cases, `List.of` or `Arrays.asList` for static lists, and a loop when it is clearer than a stream. Keep operational classes free of Lombok, new DI frameworks and `Optional` wrappers.
+- Preserve field and constructor groups, blank lines and ASCII banners. Apply the same spacing to new code. Separate guards, preparation, loading, transformation and return. Put the body of `if`, `else`, `for` and `while` on the next indented line, even for one statement. Keep related declarations together.
+- In services order constants, fields and constructors, public methods, one large separator and private methods. Reserve further comments for invariants and external behavior. In handlers get typed context first, make the cases visible and delegate actions to their owners. In analytics separate accumulation and cursor handling from response assembly.
 
-## Data changes and presentation stability
+## Patterns to reuse
 
-- Changes to data, data models, persisted documents, API payloads or data flow must not change the existing presentation or style unless a style refactor is explicitly requested.
-- Keep commands, embeds, views, field names, field order, text, formatting, components and layout exactly as they are when only the data source or data structure changes.
-- New values may be added for persistence, API responses or other consumers without displaying them. If they must be displayed, use the existing presentation patterns and change only the minimum required surface.
-- A request such as “add these values and show them like this” explicitly authorizes the requested presentation change; otherwise do not redesign or restyle existing output.
+For a shared edit, keep the entry point and mutation short. A single persistent setter can save directly. For a multi-field edit of one alert, use the approved pattern:
 
-## Service layout
+```java
+boolean saved = GuildCache.withGuild(guildId, guild -> {
+    AlertData edit = guild.getAlert(AlertType.LEAVE).deferEdit();
 
-In every modified service:
+    edit.setMessage(message);
+    edit.setPrivateMessage(privateMessage);
 
-1. constants;
-2. fields and constructors;
-3. public methods;
-4. one large separator comment;
-5. private methods.
+    return edit.update();
+});
+```
 
-The separator is the only structural comment required. Remove comments that do not explain a necessary invariant or non-obvious external behavior.
+- Bot and API share the cache and model. Bulk reads load only missing IDs and coordinate overlapping requests. Keep independent settings outcomes per block or item. The deferred copy writes explicit SQL for its block and publishes after commit. Avoid generic field-to-column maps and a single transaction for the whole settings request.
+- Keep existing command and player entry points. For audio, callers use `TrackScheduler.play(track, type)` and `TrackScheduler.stop()`. An overlap change belongs behind those entry points. Follow the effect callback and verify that Stop covers music and effects before changing it. Declare Discord command options and help in `rsc/commands.json`.
+- Keep canonical LoL models in `lol.model`. Use `Summoner`, `Rank`, `Mastery`, and string `riotId`. `SummonerView` is the complete profile and `SummonerLeaderboard` wraps it. Lists and detail both use complete `Match` and `Participant` with bans. Only detail includes timeline events. `MatchResult` is internal. Spring owns HTTP concerns. Review the affected API surface for LoL data or behavior changes.
 
-## Canonical LoL data
+## JavaScript style
 
-- `Summoner` is the canonical identity model.
-- `Rank` is the canonical ranked-queue model. Do not introduce `SummonerRank` or keep it as an alias.
-- `Mastery` is the canonical champion mastery model. Do not introduce `ChampionMastery` or keep it as an alias.
-- `riotId` remains a `String`. Do not add a `RiotId` record or class unless an accepted ADR explicitly requires it.
-- `SummonerView` is the complete profile projection.
-- `SummonerLeaderboard` wraps one `SummonerView` with leaderboard position data.
-- `Match` is the complete match model.
-- `Participant` is the complete global participant model.
-- Match lists and single-match HTTP responses both use `Match` with complete `Participant` values and bans; only the single-match response includes timeline `events`.
-- `MatchResult` remains an internal compatibility input for statistics; do not use it for public match responses.
-
-Use existing utilities before adding new mapping logic, especially `ChampionUtils`, `LaneTypeUtils`, `GameQueueTypeUtils`, `LeagueShardUtils`, `TierDivisionUtils` and `LeagueHandler`.
-
-## API boundaries
-
-- Domain and API success models belong in `lol.model`.
-- Spring DTOs are restricted to HTTP errors and infrastructure-specific representations.
-- Do not create a second DTO for a concept already represented by a canonical model.
-- Controllers should return canonical models directly unless an accepted ADR documents an HTTP-only wrapper.
-
-## API synchronization rule
-
-- Every update to LoL models, services, persisted data, parameters or business behavior must include a review of the affected API endpoints.
-- When the change affects an exposed contract, update the controller, canonical response model and API documentation in the same task.
-- No LoL change is complete until the API surface and its documentation are synchronized with the new behavior; if the change is internal-only, explicitly verify that no API update is required.
-
-## Documentation synchronization rule
-
-- Every change to models, data structures, persistence, filters, services, commands, embeds, caches, API behavior or ownership must review the relevant documentation in the same task.
-- Update the canonical source-of-truth document, ADR, API documentation or Mongo documentation whenever the changed behavior is covered there.
-- Documentation is part of the implementation gate: a task is incomplete while its affected documentation is stale or the reason for no documentation change is not recorded.
-- When a change is internal-only, explicitly record that the public API, presentation and relevant documentation remain unchanged.
-- When data changes but presentation must remain stable, document the new data source and keep the existing command, embed, view, field order, text, formatting and layout unchanged unless a style change was explicitly requested.
-
-## Agent workflow
-
-Read these files before changing LoL architecture:
-
-1. this file;
-2. `docs/architecture/README.md`;
-3. the relevant accepted ADR;
-4. `docs/HANDBOOK.md` §5-§7 for operational steps (command/endpoint/service/model/queue/mongo/cache);
-5. **CodeGraph / Graphify** — choose the graph by task using the workflow below. For LoL code changes, CodeGraph `status` → if stale `sync` → `explore` + `impact` remains mandatory before editing.
-
-The source-of-truth agent proposes and maintains architecture decisions. The main agent reviews ownership, boundaries, tests and the handoff before approving the next task.
-
-Global agents (Cursor / Claude Code / Codex / Opencode) live in `.agents/agents/` (canonical) and are shimmed to `.cursor/rules/`, `.claude/agents/`, `.codex/agents/`, `.opencode/agent/`. Skills live in `.agents/skills/beebot-handbook/`. Never edit the shim — edit `.agents/agents/*.md`.
-
-### CodeGraph and Graphify
-
-Before using either graph, check that its CLI is available and that the index
-exists for this checkout. Then check freshness. Use a fresh initialized index;
-sync/update a stale one before relying on it.
-
-- Use CodeGraph for symbol definitions and source, callers/callees, concrete
-  call flows (including callbacks), and change-impact analysis. For LoL code
-  changes, CodeGraph `explore` and `impact` are mandatory.
-- Use Graphify for broad repository orientation, subsystem/community maps,
-  cross-subsystem connections, and views that include SQL schemas or indexed
-  documentation. Treat paths as mixed relationships unless their edge types
-  establish a direct call.
-- If the task needs both local detail and an architecture overview, use both
-  after checking that each index is initialized and current.
-- If the preferred graph is missing or its CLI is unavailable, ask the user
-  whether they want it initialized/installed. For current work, continue with
-  the other graph if it is available and initialized, and state that fallback.
-  Do not initialize a missing index silently. If neither graph is available,
-  ask which one they want initialized before depending on graph results.
-- Never treat one graph as proof of completeness. In particular, a Graphify
-  community edge is an aggregate relationship and can omit individual or
-  dynamically dispatched calls.
-
-See [Graphify setup and commands](docs/HANDBOOK.md#11-graphify).
-
-Agents must stop and report a conflict instead of silently changing an ADR or an unrelated owner.
-
-## Refactoring Beebot
-
-- Read the [refactor workflow](docs/architecture/refactor-workflow.md) and the [agreed plan](docs/architecture/repository-review.md). The project agent `beebot agent` uses both when explicitly requested.
-- Trace each changed responsibility across Discord commands, API endpoints, caches and persistence before choosing where it belongs. Reuse the existing owner when callers need the same behavior.
-- For substantial changes, show the proposed flow and concrete file moves during analysis. Apply the agreed phase after authorization and preserve unrelated work.
-- Preserve the existing grouping of fields and constructor assignments, blank lines, and ASCII banners. Apply the same spacing to new code and inspect the diff for incidental formatting changes.
-- Commit only the phase the owner explicitly requests. At the end of a refactor phase, say “fai commit prima che inzii con una nuova fase refactor”.
+- For Custom Elements order static constants, getters/setters, static factory, constructor, lifecycle callbacks, then other methods. Use getters for changing DOM references and avoid private `#` fields. Prefer `async`/`await` and handle async lifecycle errors.
+- Use CSS for selector-driven state. Use JavaScript for dynamic numeric CSS variables when needed. Use one `innerHTML` assignment for assembled markup and `res.text()` with `DOMParser` for HTML fetches where the integration uses parsed markup.

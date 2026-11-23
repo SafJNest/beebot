@@ -1,58 +1,15 @@
-# LoL architecture
+# Accepted architecture decisions
 
-This directory contains accepted architecture decisions for the LoL domain.
-Repository-wide implementation rules live in [`AGENTS.md`](../../AGENTS.md);
-operational steps live in the [developer handbook](../HANDBOOK.md).
+Read this page when changing an invariant below. Use CodeGraph or Graphify to
+locate the current implementation. Earlier ADRs, the six-phase Beebot refactor
+plan and past audits are in Git at `6d0b1480:docs/architecture/`.
 
-The [agreed repository reorganization plan](repository-review.md) records the
-decisions discussed with the owner. The owner confirmed the current `bot`,
-`database`, `discord`, `lol`, `sound`, `spring`, `status` and `utils` layout on
-17 November 2026, including authentication in `discord.auth`. The document
-records the completed package moves and the six implementation steps through
-the alignment of authentication queries in `AuthDB`. It is the canonical plan
-for this work and does not amend an accepted ADR.
-
-The [refactor workflow](refactor-workflow.md) records the practices and examples
-from that work for future changes and for the `beebot agent` agent.
-
-## Ownership
-
-- `lol.model` owns canonical LoL success models.
-- `lol.service` owns domain reads, writes, cache coordination and composition.
-- `lol.queue` owns job registration and scheduling; `lol.tracker` owns periodic
-  tracking.
-- `database.nosql.MongoDB` owns canonical Mongo persistence and the rebuildable
-  `match_facets` participant projection. Match insert/upsert maintains it;
-  `!test export-match-search` rebuilds it from Mongo. LoL no longer accesses
-  MariaDB, including historical migrations.
-- Spring owns HTTP controllers, configuration and error representations.
-  `exception.Exception` owns application failures without Spring;
-  `spring.exception.ApiErrors` and `ApiExceptionHandler` own HTTP adaptation.
-- `AggregateService` owns indicative count/distribution snapshots in Mongo
-  `aggregates` and their Redis caches; see [aggregate snapshots](../mongo/16-aggregates.md).
-- Redis stores disposable caches and derived indexes.
-
-The current scheduler contract is [ADR-0014](adr/0014-global-job-scheduler.md).
-The profile aggregate identity and ownership are summarized in
-[`profile-statistics-source-of-truth.md`](profile-statistics-source-of-truth.md).
-Mongo persistence details are in [`docs/mongo`](../mongo/README.md); CHERRY
-build ownership is in [`docs/arena-build`](../arena-build/contracts.md).
-The Mongo match-facets projection is documented in
-[`docs/mongo/15-match-facets-projection.md`](../mongo/15-match-facets-projection.md).
-
-## Accepted ADRs
-
-- [0001 — Canonical LoL model boundaries](adr/0001-canonical-lol-model-boundaries.md)
-- [0002 — Summoner view and leaderboard contract](adr/0002-summoner-view-and-leaderboard-contract.md)
-- [0003 — Match and match-result models](adr/0003-match-and-match-result-models.md)
-- [0005 — LoL API JSON contract](adr/0005-lol-api-json-contract.md)
-- [0006 — Champion API contract](adr/0006-champion-api-contract.md)
-- [0007 — Unified API result and parameters](adr/0007-unified-api-result-and-parameters.md)
-- [0008 — Endpoint cache and asynchronous lookups](adr/0008-endpoint-cache-and-async-lookups.md)
-- [0009 — Mongo persistence and migration](adr/0009-mongo-persistence-and-migration.md)
-- [0010 — Database refresh queue](adr/0010-database-refresh-queue.md), superseded queue terminology
-- [0011 — Domain services and R4J queue](adr/0011-domain-services-and-r4j-queue.md), superseded ownership clauses
-- [0012 — Profile and champion analysis facades](adr/0012-profile-and-champion-analysis-facades.md)
-- [0013 — Champion tier-list projection](adr/0013-champion-tier-list.md)
-- [0014 — Global job scheduler](adr/0014-global-job-scheduler.md), current queue contract
-- [0015 — Contextual ranking projections](adr/0015-contextual-ranking.md)
+| Area | Decision |
+| --- | --- |
+| LoL models and HTTP | Domain and success models live in `lol.model`. Spring owns routing, parameters, configuration and HTTP errors. Use `LolApiParameters`, `ApiResult` and `LolApiResponses` where applicable. An HTTP-only wrapper must have an explicit justification. |
+| Profiles and matches | One chain from `Summoner` through `SummonerView` to `SummonerLeaderboard`. Match lists and detail share the complete match and participant payload, with timeline only in detail. Profile projections share `{puuid, filterKey}` using the full summoner filter key. Persist canonical statistics leaves and derive presentation and rankings from them. |
+| Persistence and cache | MongoDB owns LoL durable data, including canonical matches and rebuildable facets and aggregates. The historical LoL MariaDB path is retired. Redis holds disposable caches and index data. `RedisKey` owns LoL key patterns and TTLs. Manual Mongo index management is an operator responsibility. |
+| Async work | Use the global `QueueHandler` and its schedulers for work with lifecycle, deduplication or retry. Keep Riot fetch, compute and synchronization responsibilities distinct. Expose existing partial and pending states where data is incomplete. |
+| Analysis and builds | Profile and champion services coordinate loading and refresh. Analyzers handle calculations. Champion builds and statistics share the bounded match/event join, with separate persistence for builds and stats. Tier lists and contextual metrics derive from canonical ready statistics. Arena keeps its separate approved placement and build semantics, including missing timeline handling and no Arena skill-order payload. |
+| Ranking | Canonical ranks write before the derived Mongo competitive projection, followed by Redis publication. Leaderboard sorted sets are disposable. Records use actual metric values in Mongo. Response-only ranks and positions stay out of the canonical rank document. |
+| Beebot | Discord and HTTP share cache and mutation owners. `discord.auth` owns Discord authentication and `AuthDB` owns its SQL. The shared application exception is translated at the HTTP boundary. Sound visibility, guild administration and ordinary guild membership have distinct access rules. |

@@ -1,0 +1,7 @@
+---
+name: beebot-agent
+description: Analisi e refactoring di Beebot. Usa questo agente quando il proprietario lo richiede esplicitamente.
+kind: local
+---
+
+Leggi `AGENTS.md` e `.agents/agents/beebot-agent.md` dalla radice della repo. Segui il ruolo e le regole del progetto per l'incarico ricevuto.

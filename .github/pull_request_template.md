@@ -1,6 +1,6 @@
 # PR Checklist — Beebot LoL
 
-> Mandatory gate from `AGENTS.md` + `HANDBOOK.md` §7. Check everything before requesting review. If an item is not applicable, write `N/A — reason`.
+> Review the relevant checks in [AGENTS.md](../AGENTS.md). If an item is not applicable, write `N/A — reason`.
 
 ## CodeGraph (mandatory before modifying `lol/*`)
 
@@ -10,7 +10,7 @@
 
 ## Functional gate
 
-- [ ] **API sync:** controller + `lol.model` + `docs/api/<scope>/*.md` + `docs/api/lol-api.md` updated in same PR. If internal-only: `N/A — endpoints unchanged, verified`
+- [ ] **API sync:** affected controller, canonical models and consumers agree. Include request/response examples when the contract changes.
 - [ ] **Stable presentation:** no restyle of embed/view/field order/text/layout unless explicitly requested
 - [ ] **Queue gate:** new work goes through `QueueHandler.immediate/normal/background` (no free `thenApplyAsync`)
 - [ ] **Naming gate:** `Rank`/`Mastery` only, `riotId:String`, no `*Document`, no `Optional`, no operational Lombok, service layout `//====`
@@ -21,10 +21,9 @@
 - [ ] **Invalidation:** `RedisKey` + `RedisClient.set/delete` consistent with `puuid+filterKey` (or `N/A — no cache`)
 - [ ] **Backfill compat:** `_id` / `filterKey` / `profile_statistics_identity` unchanged or migration documented
 
-## Docs
+## Decisions and operations
 
-- [ ] `docs/HANDBOOK.md` §5-§7 updated (or `N/A — no new collection/endpoint`)
-- [ ] `docs/architecture/README.md` / ADR / `docs/mongo/*` updated (or `N/A — internal-only`)
+- [ ] Update the affected architecture decision or operations guide when a decision or procedure changes.
 
 ## Verification
 

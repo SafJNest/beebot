@@ -27,11 +27,20 @@ target/
 index/
 node_modules/
 
-.agents/
-.claude/
+/.agents/*
+!/.agents/agents/
+/.agents/agents/*
+!/.agents/agents/beebot-agent.md
+/.claude/*
+!/.claude/agents/
+/.claude/agents/*
+!/.claude/agents/beebot-agent.md
 .codegraph/
 /graphify-out/
-.codex/
+/.codex/*
+!/.codex/agents/
+/.codex/agents/*
+!/.codex/agents/beebot-agent.toml
 .cursor/
 .opencode/
 
