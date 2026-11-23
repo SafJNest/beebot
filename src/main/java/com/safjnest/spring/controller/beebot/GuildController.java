@@ -1,6 +1,7 @@
 package com.safjnest.spring.controller.beebot;
 
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -40,6 +41,7 @@ import net.dv8tion.jda.api.Permission;
 import net.dv8tion.jda.api.entities.Guild;
 import net.dv8tion.jda.api.entities.Member;
 import net.dv8tion.jda.api.entities.Role;
+import net.dv8tion.jda.api.entities.RoleColors;
 import net.dv8tion.jda.api.entities.channel.ChannelType;
 import net.dv8tion.jda.api.entities.channel.attribute.ICategorizableChannel;
 import net.dv8tion.jda.api.entities.channel.attribute.IPositionableChannel;
@@ -81,6 +83,8 @@ public class GuildController {
     private final Consumer<String> registerTwitch;
     private final Consumer<String> unregisterTwitch;
     private final Function<String, TwitchClient.Streamer> twitchLookup;
+
+    private record RoleColor(String style, String primary, String secondary, String tertiary) {}
 
     @Autowired
     public GuildController(DiscordAuthService auth) {
@@ -152,7 +156,7 @@ public class GuildController {
             Map<String, Object> entry = new LinkedHashMap<>();
             entry.put("id", role.getId());
             entry.put("name", role.getName());
-            entry.put("color", role.getColors().getPrimary());
+            entry.put("color", roleColor(role.getColors()));
             entry.put("position", role.getPosition());
             entry.put("managed", role.isManaged());
             entry.put("assignable", canManageRoles && !role.isManaged() && !role.isPublicRole() && self.canInteract(role));
@@ -250,6 +254,24 @@ public class GuildController {
     }
 
     // ================================================================================================================
+
+    private static RoleColor roleColor(RoleColors colors) {
+        if (colors.isDefault())
+            return null;
+
+        String primary = roleColorHex(colors.getPrimaryRaw());
+        if (colors.isHolographic())
+            return new RoleColor("holographic", primary, roleColorHex(colors.getSecondaryRaw()),
+                roleColorHex(colors.getTertiaryRaw()));
+        if (colors.isGradient())
+            return new RoleColor("gradient", primary, roleColorHex(colors.getSecondaryRaw()), null);
+
+        return new RoleColor("solid", primary, null, null);
+    }
+
+    private static String roleColorHex(int rgb) {
+        return "#" + HexFormat.of().withUpperCase().toHexDigits(rgb, 6);
+    }
 
     private void authorizeSettings(AuthContext context, String guildId) {
         requireAdministrator(context, guildId);
