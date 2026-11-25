@@ -155,7 +155,8 @@ public final class R2 implements AutoCloseable {
                 || settings.secretAccessKey() == null || settings.secretAccessKey().isBlank())
             throw new IllegalArgumentException("settings.r2 requires accessKeyId and secretAccessKey");
 
-        URI endpoint = URI.create("https://" + accountId + ".r2.cloudflarestorage.com");
+        URI endpoint = settings.endpoint() == null || settings.endpoint().isBlank()
+            ? URI.create("https://" + accountId + ".r2.cloudflarestorage.com") : URI.create(settings.endpoint());
         StaticCredentialsProvider credentials = StaticCredentialsProvider.create(
             AwsBasicCredentials.create(settings.accessKeyId(), settings.secretAccessKey()));
         S3Configuration s3 = S3Configuration.builder().pathStyleAccessEnabled(true)

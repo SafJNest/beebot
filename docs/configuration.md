@@ -65,7 +65,11 @@ same sessions share the auth database and key. Rotating the key requires users
 to log in again.
 
 Set `services.r2.enabled` and `cdnUrl` to enable CDN reads. Add `soundBucket`,
-`accountId`, `accessKeyId` and `secretAccessKey` for uploads. `api.cdnUrl` is
+`accountId`, `accessKeyId` and `secretAccessKey` for uploads. The optional
+`endpoint` overrides the default account R2 endpoint. `!test archive-r2` uses
+these credentials for direct PUTs to the private `iodid` bucket and does not
+need a CDN URL. The test uploads at most 1,000 matches first under `matches/`,
+then their corresponding events under `events/`. `api.cdnUrl` is
 the optional fallback for instances without R2. See [R2 credentials](https://developers.cloudflare.com/r2/api/tokens/).
 
 ## Database and deployment

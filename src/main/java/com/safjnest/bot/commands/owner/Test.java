@@ -5,10 +5,20 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.ArrayList;
+import java.util.HexFormat;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 import com.jagrosh.jdautilities.command.Command;
 import com.jagrosh.jdautilities.command.CommandEvent;
 import com.safjnest.App;
+import com.safjnest.config.R2Settings;
+import com.safjnest.config.Settings;
 import com.safjnest.bot.cache.managers.GuildCache;
 import com.safjnest.bot.cache.managers.UserCache;
 import com.safjnest.bot.model.guild.BlacklistData;
@@ -49,6 +59,21 @@ import com.safjnest.utils.CommandsLoader;
 import net.dv8tion.jda.api.entities.Guild;
 import net.dv8tion.jda.api.entities.Member;
 import net.dv8tion.jda.api.entities.channel.middleman.GuildChannel;
+import org.bson.Document;
+import org.bson.json.JsonMode;
+import org.bson.json.JsonWriterSettings;
+import com.mongodb.client.MongoCursor;
+import com.mongodb.client.MongoCollection;
+import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
+import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
+import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
+import software.amazon.awssdk.core.retry.RetryPolicy;
+import software.amazon.awssdk.core.sync.RequestBody;
+import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.S3Configuration;
+import software.amazon.awssdk.services.s3.model.PutObjectRequest;
+import com.github.luben.zstd.Zstd;
 import no.stelar7.api.r4j.basic.constants.api.regions.LeagueShard;
 import no.stelar7.api.r4j.basic.constants.types.lol.GameQueueType;
 import no.stelar7.api.r4j.pojo.lol.match.v5.LOLTimeline;
@@ -143,10 +168,199 @@ public class Test extends Command {
             case "sound" -> testSound(event, arguments);
             case "test-matchups" -> queueMatchupRegeneration(event, arguments);
             case "export-match-search" -> startMatchSearchExport(event);
+            case "archive-r2" -> archiveMatchesToR2(event);
             default -> event.reply("Usage: !test regenerate <"
                 + String.join("|", REGENERATION_OPERATIONS) + "> | !test migrate [" + String.join("|", MIGRATION_OPERATIONS)
                 + "] | !test fix-timeline <puuid> | !test fix-timeline-patch <patch>"
-                + " | !test test-matchups <puuid> <shard> | !test export-match-search.");
+                + " | !test test-matchups <puuid> <shard> | !test export-match-search | !test archive-r2.");
+        }
+    }
+
+    private static void archiveMatchesToR2(CommandEvent event) {
+        event.reply("Archiviazione R2 avviata: max 1.000 match e i relativi 1.000 events, patch 16.12 e 16.13.");
+        Thread worker = new Thread(() -> {
+            R2Settings settings = Settings.get().services().getR2();
+            if (settings == null || settings.accountId() == null || settings.accessKeyId() == null
+                    || settings.secretAccessKey() == null) {
+                event.reply("Configurazione R2 incompleta: verificare settings.r2.");
+                return;
+            }
+            String endpoint = settings.endpoint() == null || settings.endpoint().isBlank()
+                ? "https://" + settings.accountId() + ".r2.cloudflarestorage.com" : settings.endpoint();
+            S3Configuration s3Configuration = S3Configuration.builder().pathStyleAccessEnabled(true)
+                .chunkedEncodingEnabled(false).checksumValidationEnabled(false).build();
+            try (S3Client client = S3Client.builder().endpointOverride(java.net.URI.create(endpoint))
+                    .region(Region.of("auto"))
+                    .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create(
+                        settings.accessKeyId(), settings.secretAccessKey())))
+                    .serviceConfiguration(s3Configuration)
+                    .overrideConfiguration(ClientOverrideConfiguration.builder()
+                        .apiCallTimeout(java.time.Duration.ofSeconds(30))
+                        .retryPolicy(RetryPolicy.builder().numRetries(0).build()).build()).build()) {
+                runR2Archive(client, event);
+            } catch (Exception exception) {
+                event.reply("Archiviazione R2 interrotta: " + exception.getMessage());
+            }
+        }, "r2-match-archive");
+        worker.setDaemon(true);
+        worker.start();
+    }
+
+    private static void runR2Archive(S3Client client, CommandEvent event) throws Exception {
+        MongoCollection<Document> matches = MongoDB.getDatabase().getCollection("match");
+        MongoCollection<Document> timelines = MongoDB.getDatabase().getCollection("match_events");
+        Document lookup = new Document("$lookup", new Document("from", "match_events")
+            .append("localField", "_id").append("foreignField", "_id").append("as", "_timeline"));
+        Document hasTimeline = new Document("$match", new Document("_timeline.0", new Document("$exists", true)));
+        List<Document> pipeline = List.of(new Document("$match", new Document("patchMajor", new Document("$in", List.of("16.12", "16.13")))),
+            lookup, hasTimeline, new Document("$project", new Document("_timeline", 0)), new Document("$limit", 1_000));
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        List<Callable<R2ArchiveResult>> batch = new ArrayList<>(20);
+        List<MatchArchiveRef> selectedMatches = new ArrayList<>(1_000);
+        Map<String, MatchArchiveRef> referencesById = new HashMap<>();
+        R2ArchiveStats stats = new R2ArchiveStats();
+        long started = System.nanoTime();
+        int selected = 0;
+        try (MongoCursor<Document> cursor = matches.aggregate(pipeline).allowDiskUse(false).batchSize(20).iterator()) {
+            while (cursor.hasNext()) {
+                Document match = cursor.next();
+                String patch = match.getString("patchMajor");
+                String region = match.getString("region");
+                String gameId = match.getString("_id");
+                String key = "matches/" + patch + "/" + region + "/" + gameId + ".match.json.zst";
+                MatchArchiveRef reference = new MatchArchiveRef(gameId, patch, region);
+                selectedMatches.add(reference);
+                referencesById.put(gameId, reference);
+                batch.add(() -> uploadR2Document(client, key, match, stats));
+                selected++;
+                if (batch.size() >= 20) {
+                    awaitR2Batch(executor, batch);
+                    batch.clear();
+                }
+            }
+            if (!batch.isEmpty()) {
+                awaitR2Batch(executor, batch);
+                batch.clear();
+            }
+            if (selected % 20 != 0) event.reply("R2 archive, fase matches: " + selected + "/1000. " + stats.summary());
+
+            System.out.println("R2 archive matches phase complete: " + selected + "/1k");
+            event.reply("Fase matches completata. Avvio ora la fase events per gli stessi " + selected + " ID.");
+            List<String> matchIds = selectedMatches.stream().map(MatchArchiveRef::gameId).toList();
+            int uploadedEvents = 0;
+            System.out.println("R2 archive events query starting for " + matchIds.size() + " match IDs");
+            try (MongoCursor<Document> eventCursor = timelines.find(new Document("_id", new Document("$in", matchIds)))
+                    .batchSize(20).iterator()) {
+                while (eventCursor.hasNext()) {
+                    Document timeline = eventCursor.next();
+                    String gameId = timeline.getString("_id");
+                    MatchArchiveRef reference = referencesById.get(gameId);
+                    if (reference == null) continue;
+                    String key = "events/" + reference.patch() + "/" + reference.region() + "/" + gameId + ".events.json.zst";
+                    batch.add(() -> uploadR2Document(client, key, timeline, stats));
+                    uploadedEvents++;
+                    if (batch.size() >= 20) {
+                        awaitR2Batch(executor, batch);
+                        batch.clear();
+                    }
+                }
+            }
+            if (!batch.isEmpty()) {
+                awaitR2Batch(executor, batch);
+                batch.clear();
+            }
+            System.out.println("R2 archive events cursor complete: " + uploadedEvents + "/" + selected);
+            if (uploadedEvents % 20 != 0) event.reply("R2 archive, fase events: " + uploadedEvents + "/" + selected + ". " + stats.summary());
+            if (uploadedEvents != selected)
+                event.reply("Attenzione: trovati " + uploadedEvents + " events per " + selected + " match selezionati.");
+            System.out.println("R2 archive completed: matches=" + selected + ", events=" + uploadedEvents
+                + "; elapsed=" + ((System.nanoTime() - started) / 1_000_000_000) + "s. " + stats.summary());
+            event.reply("R2 archive finished: matches=" + selected + ", events=" + uploadedEvents + "; elapsed="
+                + ((System.nanoTime() - started) / 1_000_000_000) + "s. " + stats.summary());
+        } finally {
+            executor.shutdown();
+        }
+    }
+
+    private static void awaitR2Batch(ExecutorService executor, List<Callable<R2ArchiveResult>> batch) throws Exception {
+        for (Future<R2ArchiveResult> result : executor.invokeAll(batch)) result.get();
+    }
+
+    private static R2ArchiveResult uploadR2Document(S3Client client, String key, Document document, R2ArchiveStats stats) {
+        String kind = key.startsWith("matches/") ? "match" : "events";
+        byte[] original = document.toJson(JsonWriterSettings.builder().outputMode(JsonMode.EXTENDED).build())
+            .getBytes(StandardCharsets.UTF_8);
+        long compressionStarted = System.nanoTime();
+        byte[] compressed = Zstd.compress(original, 9);
+        long compressionNanos = System.nanoTime() - compressionStarted;
+        String sha256;
+        try {
+            sha256 = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(original));
+        } catch (Exception exception) {
+            throw new IllegalStateException(exception);
+        }
+        String lastUpdate = document.get("lastUpdate") == null ? null : String.valueOf(document.get("lastUpdate"));
+        Map<String, String> metadata = new HashMap<>();
+        metadata.put("schema-version", "1");
+        metadata.put("original-size", String.valueOf(original.length));
+        metadata.put("compression-level", "9");
+        metadata.put("sha256", sha256);
+        if (lastUpdate != null) metadata.put("last-update", lastUpdate);
+        long started = System.nanoTime();
+        int attempts = 0;
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            attempts++;
+            try {
+                client.putObject(PutObjectRequest.builder().bucket("iodid").key(key).contentType("application/zstd")
+                    .metadata(metadata).build(), RequestBody.fromBytes(compressed));
+                stats.record(kind, original.length, compressed.length, compressionNanos,
+                    System.nanoTime() - started, attempts, false);
+                return new R2ArchiveResult();
+            } catch (Exception exception) {
+            }
+        }
+        stats.record(kind, original.length, compressed.length, compressionNanos,
+            System.nanoTime() - started, attempts, true);
+        return new R2ArchiveResult();
+    }
+
+    private record R2ArchiveResult() {}
+
+    private record MatchArchiveRef(String gameId, String patch, String region) {}
+
+    private static final class R2ArchiveStats {
+        private final Map<String, long[]> totals = new HashMap<>();
+
+        private synchronized void record(String kind, long original, long compressed, long compressionNanos,
+                long putNanos, int attempts, boolean error) {
+            long[] values = totals.computeIfAbsent(kind, ignored -> new long[8]);
+            values[0]++;
+            values[1] += original;
+            values[2] += compressed;
+            values[3] += compressionNanos;
+            values[4] += putNanos;
+            values[5] += attempts;
+            if (error) values[6]++;
+            System.out.println("R2 archive " + ("match".equals(kind) ? "matches" : "events") + " "
+                + values[0] + "/1k" + (error ? " ERROR" : ""));
+        }
+
+        private synchronized String summary() {
+            return "match{" + describe(totals.get("match")) + "}, events{" + describe(totals.get("events")) + "}";
+        }
+
+        private static String describe(long[] values) {
+            if (values == null) return "count=0";
+            double ratio = values[1] == 0 ? 0 : (double) values[2] / values[1];
+            double seconds = values[4] / 1_000_000_000d;
+            return "count=" + values[0] + ", original=" + values[1] + "B, compressed=" + values[2]
+                + "B, avg=" + (values[1] / Math.max(1, values[0])) + "/"
+                + (values[2] / Math.max(1, values[0])) + "B original/compressed, ratio="
+                + String.format(Locale.ROOT, "%.3f", ratio)
+                + ", compression=" + String.format(Locale.ROOT, "%.1f", values[3] / 1_000_000d) + "ms total"
+                + ", PUT avg=" + String.format(Locale.ROOT, "%.1f", values[4] / 1_000_000d / Math.max(1, values[0]))
+                + "ms, throughput=" + String.format(Locale.ROOT, "%.1f", values[0] / Math.max(0.001, seconds))
+                + "/s, errors=" + values[6] + ", attempts=" + values[5];
         }
     }
 
