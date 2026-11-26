@@ -1,11 +1,25 @@
 package com.safjnest.lol.model;
 
+import java.util.List;
+
+import com.fasterxml.jackson.annotation.JsonInclude;
+
 public record ResponseMetadata(
     Pagination pagination,
     Long lastUpdate,
     Boolean refresh,
-    Filter filter
+    Filter filter,
+    @JsonInclude(JsonInclude.Include.NON_NULL) List<String> missing,
+    @JsonInclude(JsonInclude.Include.NON_NULL) List<Long> jobIds
 ) {
+
+    public ResponseMetadata(Pagination pagination, Long lastUpdate, Boolean refresh, Filter filter) {
+        this(pagination, lastUpdate, refresh, filter, null, null);
+    }
+
+    public static ResponseMetadata championPending(long lastUpdate, Filter filter, List<String> missing, List<Long> jobIds) {
+        return new ResponseMetadata(null, lastUpdate > 0 ? lastUpdate : null, true, filter, missing, jobIds);
+    }
 
     public static ResponseMetadata of(long lastUpdate, boolean refresh, Filter filter) {
         return new ResponseMetadata(null, lastUpdate > 0 ? lastUpdate : null, refresh, filter);

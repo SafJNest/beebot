@@ -35,6 +35,13 @@ public final class Router {
 
     public <T> CompletableFuture<T> submit(Class<?> type, Object route, String key, String name,
         JobPriority priority, java.util.function.Function<Job<T>, T> work) {
+        return submitTracked(type, route, key, name, priority, work).future();
+    }
+
+    public record Submission<T>(long pid, CompletableFuture<T> future) {}
+
+    public <T> Submission<T> submitTracked(Class<?> type, Object route, String key, String name,
+        JobPriority priority, java.util.function.Function<Job<T>, T> work) {
         Objects.requireNonNull(work, "work");
         AbstractScheduler<?> scheduler;
         synchronized (this) {
@@ -46,11 +53,10 @@ public final class Router {
         }
         Job<T> job = registry.create(type, route, key, name, priority, work);
         CompletableFuture<T> future = registry.future(job);
-        if (!registry.following(job)) {
+        long pid = registry.workPid(job);
+        if (pid == job.pid()) {
             try {
-                synchronized (this) {
-                    scheduler.enqueue(job);
-                }
+                scheduler.enqueue(job);
             } catch (Throwable failure) {
                 registry.cancelled(job, failure);
                 registry.released(job);
@@ -66,10 +72,10 @@ public final class Router {
             }
             registry.released(job);
         }
-        return future;
+        return new Submission<>(pid, future);
     }
 
-    private synchronized void promote(Job<?> job, JobPriority priority) {
+    private void promote(Job<?> job, JobPriority priority) {
         Job<?> source = registry.source(job);
         if (source != null) job = source;
         AbstractScheduler<?> scheduler;

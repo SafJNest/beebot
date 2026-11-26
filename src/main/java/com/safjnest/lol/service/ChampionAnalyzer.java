@@ -3,6 +3,9 @@ package com.safjnest.lol.service;
 import com.safjnest.database.nosql.MongoDB;
 import com.safjnest.lol.champion.ChampionStatsData;
 import com.safjnest.lol.champion.ChampionStatsProvider;
+import com.safjnest.lol.champion.ChampionBuildData;
+import com.safjnest.lol.champion.ChampionBuildProvider;
+import com.safjnest.lol.queue.job.Job;
 import com.safjnest.lol.model.ChampionStatistics;
 import com.safjnest.lol.model.ChampionStatistics.LaneSynergy;
 import com.safjnest.lol.model.ChampionStatistics.Overview;
@@ -25,11 +28,11 @@ import com.safjnest.lol.utils.LaneTypeUtils;
 import com.safjnest.lol.utils.GameQueueTypeUtils;
 import com.safjnest.lol.utils.PatchUtils;
 import com.safjnest.lol.utils.MatchMemoryUtils;
-import com.safjnest.lol.utils.MatchupTimelineUtils;
 
 import no.stelar7.api.r4j.basic.constants.types.lol.LaneType;
 import no.stelar7.api.r4j.basic.constants.types.lol.TeamType;
 
+import org.bson.Document;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -226,16 +229,7 @@ public final class ChampionAnalyzer {
             synergies, subteams, subteamsById);
     }
 
-    static MatrixResult recomputeMatrix(List<Filter> filters) {
-        return recomputeMatrixCoalesced(filters, List.of());
-    }
-
-    static MatrixResult recomputeMatrix(List<Filter> filters, List<Filter> buildFilters) {
-        return recomputeMatrixCoalesced(filters, buildFilters);
-    }
-
-    // New coalesce: 1 doc per scope (queue|rank|patch|region), lanes dentro
-    static MatrixResult recomputeMatrixCoalesced(List<Filter> filters, List<Filter> buildFilters) {
+    static MatrixResult recomputeMatrixCoalesced(List<Filter> filters, List<Filter> buildFilters, Job<?> job) {
         if (filters == null || filters.isEmpty()) return new MatrixResult(0, 0, 0);
         // Deduplicate to scopes (without lane)
         Map<String, ChampionStatsScope> scopes = new LinkedHashMap<>();
@@ -260,31 +254,57 @@ public final class ChampionAnalyzer {
                 }
             } else builds.putIfAbsent(f.toKey(), ChampionBuildEngine.newAccumulator(f));
         }
-        Filter first = filters.get(0);
-        Filter source = new Filter().setChampion(0).setLane(null).setQueue(first.queue()).setRank(null)
-            .setRankBehavior(first.rankBehavior()).setPatch(first.patch()).setRegion(null);
+        ChampionStatsScope first = scopes.values().iterator().next();
+        Filter source = Filter.championBuild(0, first.patch(), first.queue());
+        ChampionBuildProvider buildProvider = new ChampionBuildProvider(source);
+        Map<Integer, List<ChampionBuildEngine.BuildAccumulator>> byChampion = new HashMap<>();
+        for (ChampionBuildEngine.BuildAccumulator accumulator : builds.values()) {
+            byChampion.computeIfAbsent(accumulator.filter().champion(), ignored -> new ArrayList<>()).add(accumulator);
+        }
         RawMatrix raw = new RawMatrix();
         int persistedChampions = 0;
+        int emptyScopes = 0;
         try {
-            ChampionStatsProvider.forEachMatchWithBuild(source, (read, document) -> {
-                ChampionStatsData.RawMatch rm = read.match();
-                for (ChampionBuildEngine.BuildAccumulator acc : builds.values())
-                    for (var rec : MongoDB.championBuildRecords(document, acc.filter())) ChampionBuildEngine.accept(acc, rec);
+            MongoDB.forEachChampionRawMatchEventBatch(source, !builds.isEmpty() || !arenas.isEmpty(), job, input -> {
+                ChampionStatsData.RawMatch matchData = ChampionStatsProvider.read(input);
+                if (input.usableTimeline() && !byChampion.isEmpty()) {
+                    if (job != null)
+                        job.phase("PROCESS_BUILD");
+                    for (Document participant : ChampionBuildProvider.participants(input)) {
+                        List<ChampionBuildEngine.BuildAccumulator> candidates = byChampion.get(participant.getInteger("champion", 0));
+                        if (candidates == null) continue;
+                        ChampionBuildData.Game game = null;
+                        for (ChampionBuildEngine.BuildAccumulator accumulator : candidates) {
+                            if (!ChampionBuildProvider.matches(accumulator.filter(), input, participant)) continue;
+                            if (game == null) game = buildProvider.parse(input, participant);
+                            if (game == null) break;
+                            ChampionBuildEngine.accept(accumulator, game);
+                        }
+                    }
+                }
                 if (!arenas.isEmpty()) {
-                    Match match = MongoDB.championRawMatch(document);
+                    if (job != null)
+                        job.phase("PROCESS_BUILD");
+                    Match match = MongoDB.championRawMatch(input);
                     try {
                         for (var entry : arenas.entrySet())
-                            if (matchesMatrixFilter(arenaFilters.get(entry.getKey()), rm)) entry.getValue().accept(match);
+                            if (matchesMatrixFilter(arenaFilters.get(entry.getKey()), matchData))
+                                entry.getValue().accept(match);
                     } finally {
+                        match.events = null; // The reader owns the shared timeline.
                         MatchMemoryUtils.release(match);
                     }
                 }
-                ChampionStatsData.Game game = parse(rm);
+                if (job != null)
+                    job.phase("PROCESS_STATS");
+                ChampionStatsData.Game game = parse(matchData);
                 if (game != null) {
-                    raw.addBase(game, rm.metadata());
-                    raw.addEvents(game, rm.metadata());
+                    raw.addBase(game, matchData.metadata());
+                    raw.addEvents(game, matchData.metadata());
                 }
             });
+            if (job != null)
+                job.phase("PUBLISH_STATS");
             // previousPatch at root
             String previousPatch = null;
             try { java.util.List<String> patches = PatchUtils.getPatches(); int idx = patches.indexOf(first.patch()); if (idx >=0 && idx+1 < patches.size()) previousPatch = patches.get(idx+1); } catch (Exception ignored) {}
@@ -379,11 +399,15 @@ public final class ChampionAnalyzer {
                     }
                     addPreviousTrend(doc);
                     MongoDB.upsertChampionStatsDocument(doc);
+                    if (doc.games == 0)
+                        emptyScopes++;
                     persistedChampions += doc.champions.size();
                 } finally {
                     MatchMemoryUtils.release(doc.champions);
                 }
             }
+            if (job != null && (!builds.isEmpty() || !arenas.isEmpty()))
+                job.phase("PUBLISH_BUILD");
             for (ChampionBuildEngine.BuildAccumulator acc : builds.values()) {
                 java.util.List<com.safjnest.lol.model.Build> res = ChampionBuildEngine.finish(acc);
                 if (res.isEmpty()) res = ChampionBuildEngine.emptyResult(acc.filter());
@@ -393,7 +417,7 @@ public final class ChampionAnalyzer {
                 ArenaBuildData arena = entry.getValue().finish();
                 MongoDB.upsertChampionArena(arenaFilters.get(entry.getKey()), arena);
             }
-            return new MatrixResult(scopes.size(), 0, persistedChampions);
+            return new MatrixResult(scopes.size(), emptyScopes, persistedChampions);
         } finally {
             raw.clear();
             for (ChampionBuildEngine.BuildAccumulator accumulator : builds.values()) accumulator.clear();
@@ -402,11 +426,6 @@ public final class ChampionAnalyzer {
             arenas.clear();
             arenaFilters.clear();
         }
-    }
-
-    static void recomputeScope(ChampionStatsScope scope) {
-        if (scope == null || scope.patch() == null || scope.queue() == null) return;
-        recomputeMatrixCoalesced(List.of(scope.toFilter()), List.of());
     }
 
     static boolean matchesMatrixFilter(Filter filter, ChampionStatsData.RawMatch rawMatch) {
@@ -447,10 +466,10 @@ public final class ChampionAnalyzer {
     static ChampionStatsData.Game parse(ChampionStatsData.RawMatch rawMatch) {
         if (rawMatch == null || rawMatch.metadata() == null || rawMatch.participants() == null
                 || rawMatch.participants().isEmpty()
-                || !MatchupTimelineUtils.hasTimeline(rawMatch.metadata().events())) return null;
+                || !(rawMatch.metadata().events() instanceof JSONObject events)) return null;
 
         ChampionStatsData.MatchMeta metadata = rawMatch.metadata();
-        List<ChampionStatsData.Player> players = new ArrayList<>();
+        List<ChampionStatsData.Player> players = new ArrayList<>(rawMatch.participants().size());
         for (ChampionStatsData.RawParticipant participant : rawMatch.participants()) {
             LaneType lane = metadata.queue() == GameQueueType.CHERRY ? LaneType.NONE : participant.lane();
             players.add(new ChampionStatsData.Player(participant.champion(), lane, participant.win(),
@@ -459,19 +478,7 @@ public final class ChampionAnalyzer {
                 participant.subTeamPlacement()));
         }
         return new ChampionStatsData.Game(rawMatch.matchId(), metadata.bans(), metadata.timeStart(), metadata.timeEnd(),
-            List.copyOf(players), parseMatchData(players, metadata.events()));
-    }
-
-    private static ChampionStatsData.MatchData parseMatchData(
-            List<ChampionStatsData.Player> players,
-            Object rawEvents) {
-        JSONObject events = eventJson(rawEvents);
-        if (events == null) return new ChampionStatsData.MatchData(Map.of(), Map.of(), false);
-        try {
-            return parseEventData(players, events);
-        } finally {
-            MatchMemoryUtils.release(events);
-        }
+            List.copyOf(players), parseEventData(players, events));
     }
 
     static ChampionStatsData.MatchData parseEventData(
@@ -560,12 +567,6 @@ public final class ChampionAnalyzer {
             }
         }
         return new ChampionStatsData.MatchData(metrics, snapshots, available);
-    }
-
-    private static JSONObject eventJson(Object rawEvents) {
-        if (rawEvents instanceof String json && !json.isBlank()) return new JSONObject(json);
-        if (rawEvents instanceof Map<?, ?> map && !map.isEmpty()) return new JSONObject(map);
-        return null;
     }
 
     private static Map<TeamType, List<ChampionStatsData.Player>> byTeam(

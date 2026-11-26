@@ -3,6 +3,7 @@ package com.safjnest.bot.commands.lol;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.Map;
 
 import com.jagrosh.jdautilities.command.SlashCommand;
@@ -94,9 +95,16 @@ public class Champion extends SlashCommand {
         }
 
         Filter filter = readFilter(event, champion);
-        ChampionStatistics stats = CHAMPION_SERVICE.getStatistics(filter);
-        Build build = CHAMPION_SERVICE.getBuild(filter);
+        CompletableFuture.completedFuture(filter).thenCompose(CHAMPION_SERVICE::getForDiscord)
+            .thenAccept(data -> replyBuild(event, champion, filter, data.stats(), data.build()))
+            .exceptionally(failure -> {
+                event.getHook().editOriginal("Champion data could not be loaded.").queue();
+                return null;
+            });
+    }
 
+    private void replyBuild(SlashCommandEvent event, StaticChampion champion, Filter filter,
+            ChampionStatistics stats, Build build) {
         EmbedBuilder eb = new EmbedBuilder();
         eb.setAuthor(getTitle(champion, filter), "https://github.com/SafJNest", ChampionUtils.getChampionProfilePic(champion.getId()));
         eb.setDescription(buildDescription(stats, filter));

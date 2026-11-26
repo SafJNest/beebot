@@ -90,6 +90,18 @@ the optional fallback for instances without R2. See [R2 credentials](https://dev
   operator commands.
 - R2 object keys are described in [database/r2/README.md](../database/r2/README.md).
 
+## Champion refresh diagnostics
+
+For `GET /api/lol/champion/{champion}`, `202` includes `metadata.filter`,
+`metadata.missing` (`stats`, `build`, or both) and `metadata.jobIds`. Follow those
+PIDs on `/api/status` and in the `ChampionJob` and `ChampionInput` logs. Incompatible
+aggregates return `502`. A failed lookup or recent job failure returns `503`.
+A finished aggregate with zero eligible games returns `200`.
+
+The champion reader holds up to 1,000 match IDs per group and requests event
+cursor batches of 200 documents. Its logs report Mongo cursor time, event
+validation and parse time, input consumption time and timeline coverage.
+
 ## Cloudflare and media
 
 - Use the same R2 bucket and CDN base URL for sound audio and covers. The

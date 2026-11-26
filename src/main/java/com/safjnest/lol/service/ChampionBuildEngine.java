@@ -1,13 +1,13 @@
 package com.safjnest.lol.service;
 
 import com.safjnest.database.nosql.MongoDB;
-import com.safjnest.database.sql.QueryRecord;
 import com.safjnest.lol.champion.BuildSignature;
 import com.safjnest.lol.champion.ChampionBuildData;
 import com.safjnest.lol.champion.ChampionBuildProvider;
 import com.safjnest.lol.champion.RuneSignature;
 import com.safjnest.lol.model.Build;
 import com.safjnest.lol.model.Filter;
+import com.safjnest.lol.queue.job.Job;
 import com.safjnest.lol.utils.BuildUtils;
 import com.safjnest.lol.utils.MatchMemoryUtils;
 import com.safjnest.lol.utils.ChampionBuildTimelineUtils;
@@ -28,66 +28,23 @@ final class ChampionBuildEngine {
 
     private ChampionBuildEngine() {}
 
-    public static Build getAggregate(Filter filter) {
-        return getAggregate(filter, true);
-    }
-
-    public static List<Build> recomputeAll(Filter filter) {
-        if (filter == null) return List.of();
-        List<Build> computed = computeAll(filter);
-        if (computed == null || computed.isEmpty()) computed = emptyResult(filter);
-        if (!computed.isEmpty()) MongoDB.upsertChampionBuilds(computed);
-        return computed;
+    static boolean recompute(Filter filter, Job<?> job) {
+        BuildAccumulator accumulator = newAccumulator(filter);
+        try {
+            ChampionBuildProvider.forEachGame(filter, job, game -> accept(accumulator, game));
+            if (job != null)
+                job.phase("PUBLISH_BUILD");
+            List<Build> builds = finish(accumulator);
+            return MongoDB.upsertChampionBuild(builds.isEmpty() ? emptyResult(filter).getFirst() : builds.getFirst());
+        } finally {
+            accumulator.clear();
+        }
     }
 
     // ============================================================================
 
-    static Build getAggregate(Filter filter, boolean allowCompute) {
-        if (filter == null) return null;
-        List<Build> builds = loadBuilds(filter, allowCompute);
-        return builds.isEmpty() ? null : builds.get(0);
-    }
-
-    private static List<Build> loadBuilds(Filter filter, boolean allowCompute) {
-        if (filter == null) return List.of();
-
-        List<Build> stored;
-        try {
-            stored = MongoDB.findChampionBuilds(filter);
-        } catch (RuntimeException exception) {
-            if (!allowCompute) return List.of();
-            throw exception;
-        }
-        if (stored != null && !stored.isEmpty()) return stored;
-        if (!allowCompute) return List.of();
-
-        List<Build> computed = computeAll(filter);
-        if (computed == null || computed.isEmpty()) computed = emptyResult(filter);
-        computed.forEach(MongoDB::upsertChampionBuild);
-        return computed;
-    }
-
-    private static List<Build> computeAll(Filter filter) {
-        BuildAccumulator accumulator = newAccumulator(filter);
-        ChampionBuildProvider.forEachBatch(filter, batch -> {
-            try {
-                for (QueryRecord record : batch) accept(accumulator, record);
-            } finally {
-                MatchMemoryUtils.release(batch);
-            }
-        });
-        return finish(accumulator);
-    }
-
     static BuildAccumulator newAccumulator(Filter filter) {
         return new BuildAccumulator(filter);
-    }
-
-    static void accept(BuildAccumulator accumulator, QueryRecord record) {
-        if (accumulator == null || record == null) return;
-        ChampionBuildData.Game game = ChampionBuildProvider.parse(record, accumulator.filter);
-        if (game == null) return;
-        accept(accumulator, game);
     }
 
     static void accept(BuildAccumulator accumulator, ChampionBuildData.Game game) {

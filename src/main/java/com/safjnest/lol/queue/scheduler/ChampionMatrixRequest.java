@@ -3,7 +3,7 @@ package com.safjnest.lol.queue.scheduler;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
+import com.safjnest.lol.queue.Router.Submission;
 
 import com.safjnest.lol.model.Filter;
 import com.safjnest.lol.service.ChampionService;
@@ -11,7 +11,7 @@ import com.safjnest.lol.service.ChampionService;
 final class ChampionMatrixRequest {
 
     private final Map<String, Filter> buildFilters;
-    private CompletableFuture<ChampionService.MatrixRefreshResult> future;
+    private Submission<ChampionService.MatrixRefreshResult> submission;
     private boolean running;
 
     ChampionMatrixRequest() {
@@ -20,8 +20,9 @@ final class ChampionMatrixRequest {
 
     synchronized boolean tryAddBuild(Filter filter) {
         if (filter == null) return true;
-        if (running) return false;
-        buildFilters.putIfAbsent(filter.toKey(), Filter.fromStateKey(filter.toStateKey()));
+        if (running)
+            return includesBuild(filter);
+        buildFilters.putIfAbsent(filter.toKey(), filter);
         return true;
     }
 
@@ -30,12 +31,16 @@ final class ChampionMatrixRequest {
         return List.copyOf(buildFilters.values());
     }
 
-    synchronized void setFuture(CompletableFuture<ChampionService.MatrixRefreshResult> value) {
-        future = value;
+    synchronized boolean includesBuild(Filter filter) {
+        return buildFilters.containsKey(filter.toKey());
     }
 
-    synchronized CompletableFuture<ChampionService.MatrixRefreshResult> future() {
-        return future;
+    synchronized void setSubmission(Submission<ChampionService.MatrixRefreshResult> value) {
+        submission = value;
+    }
+
+    synchronized Submission<ChampionService.MatrixRefreshResult> submission() {
+        return submission;
     }
 
 }

@@ -1,17 +1,25 @@
 package com.safjnest.lol.queue.scheduler;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.function.Function;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import com.safjnest.exception.Exception.Type;
 import com.safjnest.lol.model.Filter;
 import com.safjnest.lol.arena.ArenaItemCatalog;
 import com.safjnest.lol.model.summoner.Summoner;
 import com.safjnest.lol.queue.QueueHandler;
+import com.safjnest.lol.queue.Router;
+import com.safjnest.lol.queue.Router.Submission;
 import com.safjnest.lol.queue.job.Job;
 import com.safjnest.lol.queue.job.JobPriority;
 import com.safjnest.lol.service.ChampionService;
@@ -19,7 +27,6 @@ import com.safjnest.lol.service.ProfileService;
 import com.safjnest.lol.service.ProfileRecordService;
 import com.safjnest.lol.utils.PatchUtils;
 import com.safjnest.status.log.BotLogger;
-import com.safjnest.lol.utils.GameQueueTypeUtils;
 
 import no.stelar7.api.r4j.basic.constants.api.regions.LeagueShard;
 import no.stelar7.api.r4j.basic.constants.types.lol.GameQueueType;
@@ -31,6 +38,11 @@ public final class ComputeScheduler extends AbstractScheduler<DatabaseWorkerType
     private static final ProfileService PROFILE_SERVICE = new ProfileService();
     private static final ProfileRecordService PROFILE_RECORD_SERVICE = new ProfileRecordService();
     private static final ChampionService CHAMPION_SERVICE = new ChampionService();
+    private static final Logger CHAMPION_LOG = LoggerFactory.getLogger("ChampionJob");
+    private static final int CHAMPION_FAILURE_LIMIT = 128;
+    private static final long CHAMPION_RETRY_MS = 30_000;
+    private static final Map<String, ChampionFailure> CHAMPION_FAILURES = new LinkedHashMap<>();
+
     private static final CompletableFuture<Void> VOID = CompletableFuture.completedFuture(null);
     private static final CompletableFuture<Boolean> NOT_SCHEDULED = CompletableFuture.completedFuture(false);
 
@@ -135,22 +147,29 @@ public final class ComputeScheduler extends AbstractScheduler<DatabaseWorkerType
             ignored -> refreshProfile(puuid, shard));
     }
 
-    public static CompletableFuture<Void> startChampionData(
-        Filter filter,
-        boolean statsMissing,
-        boolean buildMissing
-    ) {
-        if (filter == null || filter.champion() == 0) return VOID;
-        if (!statsMissing && !buildMissing) return VOID;
+    public record ChampionWork(List<Long> jobIds, CompletableFuture<?> future) {}
 
-        Filter snapshot = Filter.fromStateKey(filter.toStateKey());
-        if (statsMissing) return startChampionStatistics(snapshot, buildMissing);
-        return startChampionBuild(snapshot).thenApply(ignored -> null);
+    public static ChampionWork startChampionData(Filter filter, boolean stats, boolean build) {
+        Filter snapshot = ChampionService.dataFilter(filter);
+        synchronized (INSTANCE.lifecycleLock()) {
+            ChampionMatrixRequest existing = CHAMPION_MATRICES.get(championStatsMatrixKey(snapshot.patch(), snapshot.queue()));
+            if (!stats) {
+                Submission<?> submission = existing != null && existing.includesBuild(snapshot)
+                    ? existing.submission() : startChampionBuild(snapshot);
+                return work(submission);
+            }
+            if (existing != null && build && !existing.tryAddBuild(snapshot)) {
+                Submission<?> matrix = existing.submission();
+                Submission<?> standalone = startChampionBuild(snapshot);
+                return new ChampionWork(List.of(matrix.pid(), standalone.pid()),
+                    CompletableFuture.allOf(matrix.future(), standalone.future()));
+            }
+            return work(enqueueChampionStatsMatrix(snapshot.patch(), snapshot.queue(), build ? snapshot : null));
+        }
     }
 
-    private static CompletableFuture<Void> startChampionStatistics(Filter filter, boolean includeBuild) {
-        Filter buildFilter = includeBuild ? filter : null;
-        return enqueueChampionStatsMatrix(filter.patch(), filter.queue(), buildFilter).thenApply(ignored -> null);
+    private static ChampionWork work(Submission<?> submission) {
+        return new ChampionWork(List.of(submission.pid()), submission.future());
     }
 
     public static CompletableFuture<Void> enqueueChampionDataRefresh() {
@@ -170,7 +189,9 @@ public final class ComputeScheduler extends AbstractScheduler<DatabaseWorkerType
         String patch,
         GameQueueType queue
     ) {
-        return enqueueChampionStatsMatrix(patch, queue, null);
+        if (patch == null || patch.isBlank() || queue == null)
+            return CompletableFuture.completedFuture(new ChampionService.MatrixRefreshResult(0, 0, 0, 0, 0));
+        return enqueueChampionStatsMatrix(patch, queue, null).future();
     }
 
     public static CompletableFuture<Void> enqueueRecentChampionStatsMatrices(GameQueueType queue) {
@@ -180,7 +201,6 @@ public final class ComputeScheduler extends AbstractScheduler<DatabaseWorkerType
         List<CompletableFuture<ChampionService.MatrixRefreshResult>> futures = new ArrayList<>();
         for (int index = 0; index < patches.size(); index++) {
             CompletableFuture<ChampionService.MatrixRefreshResult> future = enqueueChampionStatsMatrix(patches.get(index), queue);
-            if (index + 1 < patches.size()) future.thenRun(System::gc);
             futures.add(future);
         }
         return CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new));
@@ -294,42 +314,26 @@ public final class ComputeScheduler extends AbstractScheduler<DatabaseWorkerType
             ignored -> generateProfileActivity(puuid, shard, requestFilter));
     }
 
-    private static CompletableFuture<ChampionService.MatrixRefreshResult> enqueueChampionStatsMatrix(
-        String patch,
-        GameQueueType queue,
-        Filter buildFilter
+    private static Submission<ChampionService.MatrixRefreshResult> enqueueChampionStatsMatrix(
+        String patch, GameQueueType queue, Filter buildFilter
     ) {
-        if (patch == null || patch.isBlank() || queue == null)
-            return CompletableFuture.completedFuture(new ChampionService.MatrixRefreshResult(0, 0, 0, 0, 0));
         String key = championStatsMatrixKey(patch, queue);
-        String name = "champion stats matrix patch=" + patch + " queue=" + queue.name();
         synchronized (INSTANCE.lifecycleLock()) {
             ChampionMatrixRequest existing = CHAMPION_MATRICES.get(key);
             if (existing != null) {
-                if (existing.tryAddBuild(buildFilter)) return existing.future();
-                CompletableFuture<Boolean> buildFuture = startChampionBuild(buildFilter);
-                return existing.future().thenCombine(buildFuture, (result, ignored) -> result);
+                existing.tryAddBuild(buildFilter);
+                return existing.submission();
             }
+
             ChampionMatrixRequest request = new ChampionMatrixRequest();
             request.tryAddBuild(buildFilter);
+            Submission<ChampionService.MatrixRefreshResult> submission = submitChampion(key,
+                "champion stats matrix patch=" + patch + " queue=" + queue.name(), job ->
+                    CHAMPION_SERVICE.refreshStatisticsMatrix(patch, queue, request.startAndGetBuildFilters(), false, job));
+            request.setSubmission(submission);
             CHAMPION_MATRICES.put(key, request);
-            CompletableFuture<ChampionService.MatrixRefreshResult> future = submit(
-                DatabaseWorkerType.CHAMPION, JobPriority.NORMAL, key, name, ignored -> {
-                    List<Filter> buildFilters = request.startAndGetBuildFilters();
-                    try {
-                        BotLogger.info("[refresh build]: generating stats | queue 1/1 ("
-                            + GameQueueTypeUtils.prettyName(queue) + ") | patch=" + patch);
-                        return CHAMPION_SERVICE.refreshStatisticsMatrix(patch, queue, buildFilters);
-                    } catch (RuntimeException | Error exception) {
-                        BotLogger.warning("[refresh build]: stats failed | queue "
-                            + GameQueueTypeUtils.prettyName(queue) + " | patch=" + patch + " | " + exception.getMessage());
-                        throw exception;
-                    } finally {
-                        CHAMPION_MATRICES.remove(key, request);
-                    }
-                });
-            request.setFuture(future);
-            return future;
+            submission.future().whenComplete((result, failure) -> CHAMPION_MATRICES.remove(key, request));
+            return submission;
         }
     }
 
@@ -363,21 +367,52 @@ public final class ComputeScheduler extends AbstractScheduler<DatabaseWorkerType
             || key.startsWith("champion-data-refresh:"));
     }
 
-    private static CompletableFuture<Boolean> startChampionBuild(Filter filter) {
+    private static Submission<Boolean> startChampionBuild(Filter filter) {
         String key = (filter.queue() == GameQueueType.CHERRY ? "champion-arena:" : "champion-build:") + filter.toKey();
-        String name = "champion build champion=" + filter.champion()
-            + " patch=" + filter.patch()
-            + " queue=" + filter.queue()
-            + " rank=" + filter.rank()
-            + " region=" + filter.region()
-            + " lane=" + filter.lane();
-        return submit(DatabaseWorkerType.CHAMPION, JobPriority.NORMAL, key, name,
-            job -> {
-                BotLogger.info("[refresh build]: generating build champion " + filter.champion()
-                    + " | queue 1/1 (" + GameQueueTypeUtils.prettyName(filter.queue()) + ") | patch=" + filter.patch());
-                return refreshChampionBuild(filter, job);
+        return submitChampion(key, "champion build filter=" + filter.toKey(), job -> {
+            if (CHAMPION_SERVICE.buildFresh(filter))
+                return true;
+            return CHAMPION_SERVICE.refreshBuild(filter, job);
+        });
+    }
+
+    private static <T> Submission<T> submitChampion(String key, String name, Function<Job<T>, T> work) {
+        synchronized (CHAMPION_FAILURES) {
+            ChampionFailure previous = CHAMPION_FAILURES.get(key);
+            if (previous != null) {
+                long retryIn = CHAMPION_RETRY_MS - (System.currentTimeMillis() - previous.at());
+                if (retryIn > 0)
+                    throw new com.safjnest.exception.Exception(Type.UNAVAILABLE, "champion_job_failed",
+                        "Champion job " + previous.pid() + " failed in " + previous.phase(), retryIn / 1_000D);
+            }
+            CHAMPION_FAILURES.remove(key);
+        }
+        QueueHandler.start();
+        return Router.global().submitTracked(ComputeScheduler.class, DatabaseWorkerType.CHAMPION, key, name,
+            JobPriority.NORMAL, job -> {
+                long started = System.nanoTime();
+                job.phase("CHECK_AVAILABILITY");
+                job.currentItem(key);
+                CHAMPION_LOG.info("pid={} key={} outcome=STARTED", job.pid(), key);
+                try {
+                    T result = work.apply(job);
+                    CHAMPION_LOG.info("pid={} key={} outcome=DONE elapsedMs={}",
+                        job.pid(), key, (System.nanoTime() - started) / 1_000_000);
+                    return result;
+                } catch (RuntimeException | Error failure) {
+                    synchronized (CHAMPION_FAILURES) {
+                        if (CHAMPION_FAILURES.size() >= CHAMPION_FAILURE_LIMIT)
+                            CHAMPION_FAILURES.remove(CHAMPION_FAILURES.keySet().iterator().next());
+                        CHAMPION_FAILURES.put(key, new ChampionFailure(job.pid(), job.phase(), System.currentTimeMillis()));
+                    }
+                    CHAMPION_LOG.warn("pid={} key={} outcome=FAILED phase={} cause={}",
+                        job.pid(), key, job.phase(), failure.toString());
+                    throw failure;
+                }
             });
     }
+
+    private record ChampionFailure(long pid, String phase, long at) {}
 
     private boolean championReserved() {
         return hasIncompleteTask(DatabaseWorkerType.CHAMPION,
@@ -471,16 +506,6 @@ public final class ComputeScheduler extends AbstractScheduler<DatabaseWorkerType
         }
     }
 
-    private static boolean refreshChampionBuild(Filter filter, Job<?> job) {
-        try {
-            boolean refreshed = CHAMPION_SERVICE.refreshBuild(filter, job);
-            if (!refreshed) BotLogger.error("Champion build refresh failed for filter=" + filter.toKey());
-            return refreshed;
-        } catch (Exception exception) {
-            BotLogger.error("Champion build refresh failed for filter=" + filter.toKey()
-                + " message=" + exception.getMessage());
-            throw new IllegalStateException(exception);
-        }
-    }
+
 
 }

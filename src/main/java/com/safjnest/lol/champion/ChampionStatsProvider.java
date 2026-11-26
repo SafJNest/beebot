@@ -4,14 +4,10 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.function.BiConsumer;
-import java.util.function.Consumer;
 
 import org.bson.Document;
 
-import com.safjnest.database.nosql.MongoDB;
-import com.safjnest.lol.model.Filter;
-import com.safjnest.lol.utils.MatchMemoryUtils;
+import com.safjnest.database.nosql.MongoDB.ChampionRawMatch;
 import com.safjnest.utils.ParseUtils;
 
 import no.stelar7.api.r4j.basic.constants.types.lol.LaneType;
@@ -22,45 +18,13 @@ import no.stelar7.api.r4j.basic.constants.api.regions.LeagueShard;
 
 public final class ChampionStatsProvider {
 
-    public static final int EVENT_BATCH_SIZE = 10_000;
-
     private ChampionStatsProvider() {}
 
-    public static void forEachMatch(
-            Filter filter,
-            Consumer<ChampionStatsData.RawMatchRead> consumer) {
-        if (filter == null || consumer == null) return;
-        forEachMatch(filter, false, (read, document) -> consumer.accept(read));
-    }
-
-    public static void forEachMatchWithBuild(
-            Filter filter,
-            BiConsumer<ChampionStatsData.RawMatchRead, Document> consumer) {
-        if (filter == null || consumer == null) return;
-        forEachMatch(filter, true, consumer);
-    }
-
-    private static void forEachMatch(
-            Filter filter,
-            boolean withBuild,
-            BiConsumer<ChampionStatsData.RawMatchRead, Document> consumer) {
-        MongoDB.forEachChampionRawMatchEventBatch(filter, EVENT_BATCH_SIZE, withBuild, raw -> {
-            long materializeStarted = System.nanoTime();
-            ChampionStatsData.RawMatch match = rawMatch(raw.document());
-            ChampionStatsData.RawMatchRead read = new ChampionStatsData.RawMatchRead(match,
-                raw.matchReadNanos(), raw.eventReadNanos(), System.nanoTime() - materializeStarted);
-            try {
-                consumer.accept(read, raw.document());
-            } finally {
-                MatchMemoryUtils.release(match);
-            }
-        });
-    }
-
-    private static ChampionStatsData.RawMatch rawMatch(Document document) {
+    public static ChampionStatsData.RawMatch read(ChampionRawMatch raw) {
+        Document document = raw.document();
         String matchId = String.valueOf(document.get("_id"));
         ChampionStatsData.MatchMeta metadata = new ChampionStatsData.MatchMeta(
-                map(document.get("bans")), document.get("events"),
+                map(document.get("bans")), raw.usableTimeline() ? raw.timeline() : null,
                 ParseUtils.longValue(document.get("timeStart")), ParseUtils.longValue(document.get("timeEnd")),
                 region(document.getString("region")), rank(document.getString("rank")), queue(document.getString("queue")));
         List<ChampionStatsData.RawParticipant> participants = new ArrayList<>();

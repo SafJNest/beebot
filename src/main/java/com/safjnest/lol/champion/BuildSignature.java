@@ -11,8 +11,6 @@ import java.util.HashSet;
 import com.safjnest.lol.utils.ChampionBuildTimelineUtils;
 
 import no.stelar7.api.r4j.pojo.lol.staticdata.item.Item;
-import org.json.JSONArray;
-import org.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -40,31 +38,26 @@ public record BuildSignature(
     private static final Set<Integer> CONSUMABLES = Set.of(2003, 2055, 2138, 2139, 2140, 2010);
     private static final int COMPLETED_ITEM_DEPTH = 3;
 
-    public static BuildSignature from(JSONObject buildJson, JSONArray skillOrderJson, JSONArray augmentsJson, JSONArray summonerSpellsJson, Filter filter) {
-        return from(buildJson, skillOrderJson, augmentsJson, summonerSpellsJson, filter, List.of(), List.of());
+    record Catalog(Map<Integer, Item> items, Set<Integer> bootIds) {
+        static Catalog forPatch(String patch) {
+            Map<Integer, Item> items = StaticDataService.getItems(patch);
+            Set<Integer> boots = new HashSet<>();
+            for (Map.Entry<Integer, Item> entry : items.entrySet()) {
+                if (ItemUtils.isBoots(entry.getValue()))
+                    boots.add(entry.getKey());
+            }
+            return new Catalog(items, boots);
+        }
     }
 
-    public static BuildSignature from(JSONObject buildJson, JSONArray skillOrderJson,
-                                      JSONArray augmentsJson, JSONArray summonerSpellsJson, Filter filter,
-                                      List<ChampionBuildTimelineUtils.ItemEvent> itemEvents,
-                                      List<ChampionBuildTimelineUtils.SkillUpgrade> skillUpgrades) {
-        return from(buildJson, skillOrderJson, augmentsJson, summonerSpellsJson, filter,
-                itemEvents, List.of(), skillUpgrades);
-    }
-
-    public static BuildSignature from(JSONObject buildJson, JSONArray skillOrderJson,
-                                      JSONArray augmentsJson, JSONArray summonerSpellsJson, Filter filter,
-                                      List<ChampionBuildTimelineUtils.ItemEvent> itemEvents,
-                                      List<ChampionBuildTimelineUtils.ItemEvent> starterEvents,
-                                      List<ChampionBuildTimelineUtils.SkillUpgrade> skillUpgrades) {
-        JSONObject buildObj = buildJson.optJSONObject("build");
-        if (buildObj == null || buildObj.optJSONArray("build") == null) return null;
-
-        Map<Integer, Item> items = filter == null ? ItemUtils.getItems() : StaticDataService.getItems(filter.patch());
-        Set<Integer> bootIds = new HashSet<>();
-        for (var entry : items.entrySet()) if (ItemUtils.isBoots(entry.getValue())) bootIds.add(entry.getKey());
-        List<Integer> inventory = BuildUtils.jsonArrayToIntList(buildObj.optJSONArray("build"));
-        List<Integer> fullBuildList = extractFullBuild(buildObj, itemEvents, items, bootIds);
+    static BuildSignature from(List<Integer> inventory, List<Integer> skillOrder, List<Integer> augments,
+                               List<Integer> summonerSpells, Filter filter, Catalog catalog,
+                               List<ChampionBuildTimelineUtils.ItemEvent> itemEvents,
+                               List<ChampionBuildTimelineUtils.ItemEvent> starterEvents,
+                               List<ChampionBuildTimelineUtils.SkillUpgrade> skillUpgrades) {
+        Map<Integer, Item> items = catalog.items();
+        Set<Integer> bootIds = catalog.bootIds();
+        List<Integer> fullBuildList = extractFullBuild(inventory, itemEvents, items, bootIds);
         int boots = inventory.stream().filter(bootIds::contains)
                 .filter(id -> id != ItemUtils.BASE_BOOTS).findFirst().orElse(0);
         int supportItem = inventory.stream().filter(SUPPORT_ITEMS::contains).findFirst().orElse(0);
@@ -76,27 +69,16 @@ public record BuildSignature(
 
         Collections.sort(starterList);
 
-        List<Integer> spellOrderList = skillOrder(skillOrderJson, skillUpgrades);
-
+        List<Integer> spellOrderList = ChampionBuildTimelineUtils.skillOrder(skillOrder, skillUpgrades);
         List<Integer> prismaticIds = new ArrayList<>();
         for (int id : inventory) if (ItemUtils.isPrismatic(id)) prismaticIds.add(id);
 
         List<Integer> augmentIds = new ArrayList<>();
-        if (augmentsJson != null && augmentsJson.length() > 0) {
-            for (int i = 0; i < augmentsJson.length(); i++) {
-                int id = ParseUtils.parseInt(augmentsJson.opt(i));
-                if (id != 0) augmentIds.add(id);
-            }
-        }
-
-        List<Integer> summonerSpellIds = new ArrayList<>();
-        if (summonerSpellsJson != null && summonerSpellsJson.length() > 0) {
-            for (int i = 0; i < summonerSpellsJson.length(); i++) {
-                int id = ParseUtils.parseInt(summonerSpellsJson.opt(i));
-                if (id != 0) summonerSpellIds.add(id);
-            }
-        }
-
+        for (int id : augments) if (id != 0)
+            augmentIds.add(id);
+        List<Integer> summonerSpellIds = new ArrayList<>(2);
+        for (int id : summonerSpells) if (id != 0)
+            summonerSpellIds.add(id);
         Collections.sort(summonerSpellIds);
 
         return new BuildSignature(
@@ -218,13 +200,8 @@ public record BuildSignature(
         return result;
     }
 
-    static List<Integer> extractFullBuild(JSONObject buildObj, List<ChampionBuildTimelineUtils.ItemEvent> itemEvents) {
-        return extractFullBuild(buildObj, itemEvents, ItemUtils.getItems(), ItemUtils.getBoots());
-    }
-
-    private static List<Integer> extractFullBuild(JSONObject buildObj,
+    private static List<Integer> extractFullBuild(List<Integer> inventory,
             List<ChampionBuildTimelineUtils.ItemEvent> itemEvents, Map<Integer, Item> items, Set<Integer> bootIds) {
-        List<Integer> inventory = BuildUtils.jsonArrayToIntList(buildObj.optJSONArray("build"));
         List<Integer> orderedInventory = orderByTimeline(inventory, itemEvents);
         LinkedHashSet<Integer> ordered = new LinkedHashSet<>();
         for (int id : orderedInventory) if (!isSkippable(id, items.get(id), bootIds)) ordered.add(id);
@@ -250,10 +227,6 @@ public record BuildSignature(
             else remaining.put(id, count - 1);
         }
         return result;
-    }
-
-    static List<Integer> skillOrder(JSONArray fallback, List<ChampionBuildTimelineUtils.SkillUpgrade> upgrades) {
-        return ChampionBuildTimelineUtils.skillOrder(fallback, upgrades);
     }
 
     private static List<Integer> extractCore(List<Integer> fullBuild, List<Integer> starterList, Map<Integer, Item> items) {
