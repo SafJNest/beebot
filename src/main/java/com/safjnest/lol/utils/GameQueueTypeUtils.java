@@ -3,7 +3,7 @@ package com.safjnest.lol.utils;
 import java.util.Arrays;
 import java.util.List;
 
-import com.safjnest.model.customemoji.CustomEmojiHandler;
+import com.safjnest.bot.model.customemoji.CustomEmojiHandler;
 import com.safjnest.utils.SafJNest;
 
 import no.stelar7.api.r4j.basic.constants.types.lol.GameQueueType;
@@ -24,7 +24,8 @@ public class GameQueueTypeUtils {
   );
   private static final List<GameQueueType> LEADERBOARD_QUEUES = List.of(
     GameQueueType.RANKED_SOLO_5X5,
-    GameQueueType.RANKED_FLEX_SR
+    GameQueueType.RANKED_FLEX_SR,
+    GameQueueType.RANKED_PREMADE_5X5
   );
 
   private static final List<GameQueueType> RANKED_QUEUES = List.of(

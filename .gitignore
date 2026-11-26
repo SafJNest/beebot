@@ -27,7 +27,25 @@ target/
 index/
 node_modules/
 
+/.agents/*
+!/.agents/agents/
+/.agents/agents/*
+!/.agents/agents/beebot-agent.md
+/.claude/*
+!/.claude/agents/
+/.claude/agents/*
+!/.claude/agents/beebot-agent.md
+.codegraph/
+/graphify-out/
+/.codex/*
+!/.codex/agents/
+/.codex/agents/*
+!/.codex/agents/beebot-agent.toml
+.cursor/
+.opencode/
+
 rsc/Upload/*
+rsc/cache/
 rsc/tts/*
 .fleet/
 .idea/
@@ -40,6 +58,8 @@ l4j8cache/
 .DS_Store
 
 rsc/settings.json
+rsc/beebot.local.json
+/beebot.yml
 
 config.properties
 
