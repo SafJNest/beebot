@@ -1,15 +1,11 @@
 package com.safjnest.lol.service;
 
-import com.safjnest.database.nosql.MongoDB;
 import com.safjnest.lol.champion.BuildSignature;
 import com.safjnest.lol.champion.ChampionBuildData;
-import com.safjnest.lol.champion.ChampionBuildProvider;
 import com.safjnest.lol.champion.RuneSignature;
 import com.safjnest.lol.model.Build;
 import com.safjnest.lol.model.Filter;
-import com.safjnest.lol.queue.job.Job;
 import com.safjnest.lol.utils.BuildUtils;
-import com.safjnest.lol.utils.MatchMemoryUtils;
 import com.safjnest.lol.utils.ChampionBuildTimelineUtils;
 
 import java.util.ArrayList;
@@ -26,144 +22,126 @@ final class ChampionBuildEngine {
     private static final int AUGMENT_SLOT_COUNT = 6;
     private static final int MAX_ABILITY_SLOT = 4;
 
-    private ChampionBuildEngine() {}
+    private final Filter filter;
+    private final Map<String, int[]> coreBuilds = new LinkedHashMap<>();
+    private final Map<String, List<Integer>> coreBuildItems = new LinkedHashMap<>();
+    private final Map<String, TimingStats> coreBuildTimes = new LinkedHashMap<>();
+    private final Map<Integer, int[]> coreItems = new LinkedHashMap<>();
+    private final Map<Integer, TimingStats> coreItemTimes = new LinkedHashMap<>();
+    private final Map<String, int[]> starters = new LinkedHashMap<>();
+    private final Map<Integer, int[]> boots = new LinkedHashMap<>();
+    private final Map<Integer, TimingStats> bootTimes = new LinkedHashMap<>();
+    private final Map<Integer, int[]> supportItems = new LinkedHashMap<>();
+    private final Map<Integer, TimingStats> supportTimes = new LinkedHashMap<>();
+    private final Map<Integer, int[]> roleBoundItems = new LinkedHashMap<>();
+    private final Map<Integer, TimingStats> roleBoundTimes = new LinkedHashMap<>();
+    private final Map<Integer, Map<Integer, int[]>> slots = new LinkedHashMap<>();
+    private final Map<Integer, Map<Integer, TimingStats>> slotTimes = new LinkedHashMap<>();
+    private final RuneOptionAccumulator runes = new RuneOptionAccumulator();
+    private final Map<String, int[]> summonerSpells = new LinkedHashMap<>();
+    private final SkillOrderTrie skillOrders = new SkillOrderTrie();
+    private final Map<Integer, int[]> prismatics = new LinkedHashMap<>();
+    private final Map<Integer, TimingStats> prismaticTimes = new LinkedHashMap<>();
+    private final Map<Integer, Map<Integer, int[]>> augments = new LinkedHashMap<>();
+    private int games;
+    private int wins;
 
-    static boolean recompute(Filter filter, Job<?> job) {
-        BuildAccumulator accumulator = newAccumulator(filter);
-        try {
-            ChampionBuildProvider.forEachGame(filter, job, game -> accept(accumulator, game));
-            if (job != null)
-                job.phase("PUBLISH_BUILD");
-            List<Build> builds = finish(accumulator);
-            return MongoDB.upsertChampionBuild(builds.isEmpty() ? emptyResult(filter).getFirst() : builds.getFirst());
-        } finally {
-            accumulator.clear();
+    ChampionBuildEngine(Filter filter) {
+        this.filter = filter;
+    }
+
+    Filter filter() {
+        return filter;
+    }
+
+    void accept(ChampionBuildData.Game game) {
+        if (game == null) {
+            return;
         }
+
+        BuildSignature signature = game.signature();
+        Map<Integer, Long> purchaseTimes = game.itemPurchaseTimesMillis();
+        boolean win = game.win();
+
+        games++;
+        wins += win ? 1 : 0;
+
+        addCore(signature.core(), purchaseTimes, win);
+        add(starters, BuildUtils.joinInts(signature.starter()), win);
+        addTimedItem(signature.boots(), purchaseTimes, win, boots, bootTimes);
+        addTimedItem(signature.suppItem(), purchaseTimes, win, supportItems, supportTimes);
+        addTimedItem(game.roleBoundId(), purchaseTimes, win, roleBoundItems, roleBoundTimes);
+        addSlots(signature, purchaseTimes, win);
+
+        RuneSignature configuration = game.runes();
+        if (configuration != null) {
+            runes.add(configuration, win);
+        }
+
+        List<Integer> spells = signature.summonerSpells();
+        if (!spells.isEmpty()) {
+            add(summonerSpells, BuildUtils.joinInts(spells), win);
+        }
+        skillOrders.add(signature.spellOrder(), win, game.skillUpgrades());
+
+        for (int item : signature.prismatics()) {
+            addTimedItem(item, purchaseTimes, win, prismatics, prismaticTimes);
+        }
+
+        List<Integer> augmentIds = signature.augments();
+        int augmentCount = Math.min(AUGMENT_SLOT_COUNT, augmentIds.size());
+        for (int slot = 0; slot < augmentCount; slot++) {
+            Map<Integer, int[]> options = augments.computeIfAbsent(slot, ignored -> new LinkedHashMap<>());
+            add(options, augmentIds.get(slot), win);
+        }
+    }
+
+    Build finish() {
+        List<Build.CoreBuildOption> coreBuildOptions = toCoreBuilds();
+        List<Build.Option> coreItemOptions = toTimedOptions(coreItems, coreItemTimes, games);
+        List<Build.Option> starterOptions = toConfigOptions(starters, games);
+        List<Build.Option> bootOptions = toTimedOptions(boots, bootTimes, games);
+        List<Build.Option> supportItemOptions = toTimedOptions(supportItems, supportTimes, games);
+        List<Build.Option> roleBoundOptions = toTimedOptions(roleBoundItems, roleBoundTimes, games);
+        List<List<Build.Option>> itemSlots = games == 0 ? List.of() : toSlots(slots, slotTimes, SLOT_COUNT, games);
+
+        List<Build.RuneOption> runeOptions = runes.toOptions(games);
+        List<Build.Option> spellOptions = toConfigOptions(summonerSpells, games);
+        List<Build.SkillOrderOption> skillOrderOptions = skillOrders.toOptions(games);
+        List<Build.Option> prismaticOptions = toTimedOptions(prismatics, prismaticTimes, games);
+        List<List<Build.Option>> augmentSlots = games == 0 ? List.of() : toSlots(augments, AUGMENT_SLOT_COUNT, games);
+
+        return new Build(filter, games, wins, rate(wins, games),
+            coreBuildOptions, coreItemOptions, starterOptions, bootOptions, supportItemOptions,
+            roleBoundOptions, itemSlots, runeOptions, spellOptions, skillOrderOptions, prismaticOptions, augmentSlots);
+    }
+
+    void clear() {
+        coreBuilds.clear();
+        coreBuildItems.clear();
+        coreBuildTimes.clear();
+        coreItems.clear();
+        coreItemTimes.clear();
+        starters.clear();
+        boots.clear();
+        bootTimes.clear();
+        supportItems.clear();
+        supportTimes.clear();
+        roleBoundItems.clear();
+        roleBoundTimes.clear();
+        slots.clear();
+        slotTimes.clear();
+        runes.clear();
+        summonerSpells.clear();
+        skillOrders.clear();
+        prismatics.clear();
+        prismaticTimes.clear();
+        augments.clear();
+        games = 0;
+        wins = 0;
     }
 
     // ============================================================================
-
-    static BuildAccumulator newAccumulator(Filter filter) {
-        return new BuildAccumulator(filter);
-    }
-
-    static void accept(BuildAccumulator accumulator, ChampionBuildData.Game game) {
-        if (accumulator == null || game == null) return;
-        accumulator.games++;
-        if (game.win()) accumulator.wins++;
-        addCore(game, accumulator.coreBuilds, accumulator.coreBuildItems, accumulator.coreItems);
-        addCoreTimes(game, accumulator.coreBuildTimes, accumulator.coreItemTimes);
-        addStarter(game, accumulator.starters);
-        addTimedItem(game, game.signature().boots(), accumulator.boots, accumulator.bootTimes);
-        addTimedItem(game, game.signature().suppItem(), accumulator.supportItems, accumulator.supportTimes);
-        addTimedItem(game, game.roleBoundId(), accumulator.roleBoundItems, accumulator.roleBoundTimes);
-        addSlots(game, accumulator.slots, accumulator.slotTimes);
-        addRunes(game, accumulator.runes);
-        addSummonerSpells(game, accumulator.summonerSpells);
-        addSkillOrder(game, accumulator.skillOrders);
-        addPrismatics(game, accumulator.prismatics, accumulator.prismaticTimes);
-        addAugments(game, accumulator.augments);
-    }
-
-    static List<Build> finish(BuildAccumulator accumulator) {
-        if (accumulator == null || accumulator.games == 0) return List.of();
-        int games = accumulator.games;
-        int wins = accumulator.wins;
-        return List.of(new Build(
-            accumulator.filter, games, wins, rate(wins, games),
-            toCoreBuilds(accumulator.coreBuilds, accumulator.coreBuildItems, accumulator.coreBuildTimes, games),
-            toTimedOptions(accumulator.coreItems, accumulator.coreItemTimes, games), toConfigOptions(accumulator.starters, games),
-            toTimedOptions(accumulator.boots, accumulator.bootTimes, games),
-            toTimedOptions(accumulator.supportItems, accumulator.supportTimes, games),
-            toTimedOptions(accumulator.roleBoundItems, accumulator.roleBoundTimes, games),
-            toSlots(accumulator.slots, accumulator.slotTimes, SLOT_COUNT, games),
-            accumulator.runes.toOptions(games),
-            toConfigOptions(accumulator.summonerSpells, games), accumulator.skillOrders.toOptions(games),
-            toTimedOptions(accumulator.prismatics, accumulator.prismaticTimes, games),
-            toSlots(accumulator.augments, AUGMENT_SLOT_COUNT, games)
-        ));
-    }
-
-    static List<Build> emptyResult(Filter filter) {
-        return List.of(new Build(
-            filter,
-            0,
-            0,
-            0,
-            List.of(),
-            List.of(),
-            List.of(),
-            List.of(),
-            List.of(),
-            List.of(),
-            List.of(),
-            List.of(),
-            List.of(),
-            List.of(),
-            List.of(),
-            List.of()
-        ));
-    }
-
-    static final class BuildAccumulator {
-
-        private final Filter filter;
-        private final Map<String, int[]> coreBuilds = new LinkedHashMap<>();
-        private final Map<String, List<Integer>> coreBuildItems = new LinkedHashMap<>();
-        private final Map<String, TimingStats> coreBuildTimes = new LinkedHashMap<>();
-        private final Map<Integer, int[]> coreItems = new LinkedHashMap<>();
-        private final Map<Integer, TimingStats> coreItemTimes = new LinkedHashMap<>();
-        private final Map<String, int[]> starters = new LinkedHashMap<>();
-        private final Map<Integer, int[]> boots = new LinkedHashMap<>();
-        private final Map<Integer, TimingStats> bootTimes = new LinkedHashMap<>();
-        private final Map<Integer, int[]> supportItems = new LinkedHashMap<>();
-        private final Map<Integer, TimingStats> supportTimes = new LinkedHashMap<>();
-        private final Map<Integer, int[]> roleBoundItems = new LinkedHashMap<>();
-        private final Map<Integer, TimingStats> roleBoundTimes = new LinkedHashMap<>();
-        private final Map<Integer, Map<Integer, int[]>> slots = new LinkedHashMap<>();
-        private final Map<Integer, Map<Integer, TimingStats>> slotTimes = new LinkedHashMap<>();
-        private final RuneOptionAccumulator runes = new RuneOptionAccumulator();
-        private final Map<String, int[]> summonerSpells = new LinkedHashMap<>();
-        private final SkillOrderTrie skillOrders = new SkillOrderTrie();
-        private final Map<Integer, int[]> prismatics = new LinkedHashMap<>();
-        private final Map<Integer, TimingStats> prismaticTimes = new LinkedHashMap<>();
-        private final Map<Integer, Map<Integer, int[]>> augments = new LinkedHashMap<>();
-        private int games;
-        private int wins;
-
-        private BuildAccumulator(Filter filter) {
-            this.filter = filter;
-        }
-
-        Filter filter() {
-            return filter;
-        }
-
-        void clear() {
-            MatchMemoryUtils.release(coreBuilds);
-            MatchMemoryUtils.release(coreBuildItems);
-            MatchMemoryUtils.release(coreBuildTimes);
-            MatchMemoryUtils.release(coreItems);
-            MatchMemoryUtils.release(coreItemTimes);
-            MatchMemoryUtils.release(starters);
-            MatchMemoryUtils.release(boots);
-            MatchMemoryUtils.release(bootTimes);
-            MatchMemoryUtils.release(supportItems);
-            MatchMemoryUtils.release(supportTimes);
-            MatchMemoryUtils.release(roleBoundItems);
-            MatchMemoryUtils.release(roleBoundTimes);
-            MatchMemoryUtils.release(slots);
-            MatchMemoryUtils.release(slotTimes);
-            runes.clear();
-            MatchMemoryUtils.release(summonerSpells);
-            skillOrders.clear();
-            MatchMemoryUtils.release(prismatics);
-            MatchMemoryUtils.release(prismaticTimes);
-            MatchMemoryUtils.release(augments);
-            games = 0;
-            wins = 0;
-        }
-    }
 
     static final class RuneOptionAccumulator {
 
@@ -218,116 +196,94 @@ final class ChampionBuildEngine {
         }
 
         void clear() {
-            MatchMemoryUtils.release(values);
-            MatchMemoryUtils.release(configurations);
-            MatchMemoryUtils.release(completeShardVariants);
+            values.clear();
+            configurations.clear();
+            completeShardVariants.clear();
         }
     }
 
-    private static void addCore(ChampionBuildData.Game game, Map<String, int[]> builds,
-                                Map<String, List<Integer>> buildItems, Map<Integer, int[]> items) {
-        BuildSignature signature = game.signature();
-        String key = BuildUtils.joinInts(signature.core());
-        add(builds, key, game.win());
-        buildItems.putIfAbsent(key, signature.core());
-        for (Integer item : signature.core()) add(items, item, game.win());
-    }
+    private void addCore(List<Integer> core, Map<Integer, Long> purchaseTimes, boolean win) {
+        if (core.isEmpty()) {
+            return;
+        }
 
-    private static void addCoreTimes(ChampionBuildData.Game game, Map<String, TimingStats> buildTimes,
-                                     Map<Integer, TimingStats> itemTimes) {
-        List<Integer> core = game.signature().core();
-        if (core.isEmpty()) return;
+        String key = BuildUtils.joinInts(core);
+        add(coreBuilds, key, win);
+        coreBuildItems.putIfAbsent(key, core);
+
         long completedAt = 0;
         boolean complete = true;
-        for (Integer item : core) {
-            Long acquiredAt = game.itemPurchaseTimesMillis().get(item);
+        for (int item : core) {
+            add(coreItems, item, win);
+
+            Long acquiredAt = purchaseTimes.get(item);
             if (acquiredAt == null) {
                 complete = false;
                 continue;
             }
-            addTime(itemTimes, item, acquiredAt);
+
+            TimingStats timing = coreItemTimes.computeIfAbsent(item, ignored -> new TimingStats());
+            timing.add(acquiredAt / 1000.0);
             completedAt = Math.max(completedAt, acquiredAt);
         }
-        if (complete) addTime(buildTimes, BuildUtils.joinInts(core), completedAt);
+
+        if (complete) {
+            TimingStats timing = coreBuildTimes.computeIfAbsent(key, ignored -> new TimingStats());
+            timing.add(completedAt / 1000.0);
+        }
     }
 
-    private static void addStarter(ChampionBuildData.Game game, Map<String, int[]> values) {
-        add(values, BuildUtils.joinInts(game.signature().starter()), game.win());
+    private static void addTimedItem(int item, Map<Integer, Long> purchaseTimes, boolean win,
+                                     Map<Integer, int[]> values, Map<Integer, TimingStats> times) {
+        if (item == 0) {
+            return;
+        }
+
+        add(values, item, win);
+        Long acquiredAt = purchaseTimes.get(item);
+        if (acquiredAt != null) {
+            TimingStats timing = times.computeIfAbsent(item, ignored -> new TimingStats());
+            timing.add(acquiredAt / 1000.0);
+        }
     }
 
-    private static void addTimedItem(ChampionBuildData.Game game, int item, Map<Integer, int[]> values,
-                                     Map<Integer, TimingStats> times) {
-        if (item == 0) return;
-        add(values, item, game.win());
-        addItemTime(game, item, times);
-    }
-
-    private static void addSlots(ChampionBuildData.Game game, Map<Integer, Map<Integer, int[]>> values,
-                                 Map<Integer, Map<Integer, TimingStats>> times) {
-        BuildSignature signature = game.signature();
+    private void addSlots(BuildSignature signature, Map<Integer, Long> purchaseTimes, boolean win) {
         Set<Integer> excluded = coreExcluded(signature);
-        List<Integer> extra = new ArrayList<>();
-        for (Integer item : signature.fullBuild())
-            if (!excluded.contains(item) && !signature.starter().contains(item)) extra.add(item);
-        for (int slot = 0; slot < SLOT_COUNT && slot < extra.size(); slot++) {
-            add(values, slot, extra.get(slot), game.win());
-            Long acquiredAt = game.itemPurchaseTimesMillis().get(extra.get(slot));
-            if (acquiredAt != null) addTime(times.computeIfAbsent(slot, ignored -> new LinkedHashMap<>()),
-                extra.get(slot), acquiredAt);
+        int slot = 0;
+        for (int item : signature.fullBuild()) {
+            if (excluded.contains(item) || signature.starter().contains(item)) {
+                continue;
+            }
+
+            Map<Integer, int[]> options = slots.computeIfAbsent(slot, ignored -> new LinkedHashMap<>());
+            add(options, item, win);
+
+            Long acquiredAt = purchaseTimes.get(item);
+            if (acquiredAt != null) {
+                Map<Integer, TimingStats> timings = slotTimes.computeIfAbsent(slot, ignored -> new LinkedHashMap<>());
+                TimingStats timing = timings.computeIfAbsent(item, ignored -> new TimingStats());
+                timing.add(acquiredAt / 1000.0);
+            }
+
+            slot++;
+            if (slot == SLOT_COUNT) {
+                break;
+            }
         }
     }
 
-    private static void addItemTime(ChampionBuildData.Game game, int item,
-                                    Map<Integer, TimingStats> times) {
-        Long acquiredAt = game.itemPurchaseTimesMillis().get(item);
-        if (acquiredAt != null) addTime(times, item, acquiredAt);
-    }
-
-    private static <K> void addTime(Map<K, TimingStats> values, K key, long timestampMillis) {
-        values.computeIfAbsent(key, ignored -> new TimingStats()).add(timestampMillis / 1000.0);
-    }
-
-    private static void addRunes(ChampionBuildData.Game game, RuneOptionAccumulator values) {
-        RuneSignature configuration = game.runes();
-        if (configuration == null) return;
-        values.add(configuration, game.win());
-    }
-
-    private static void addSummonerSpells(ChampionBuildData.Game game, Map<String, int[]> values) {
-        if (!game.signature().summonerSpells().isEmpty())
-            add(values, BuildUtils.joinInts(game.signature().summonerSpells()), game.win());
-    }
-
-    private static void addSkillOrder(ChampionBuildData.Game game, SkillOrderTrie values) {
-        values.add(game.signature().spellOrder(), game.win(), game.skillUpgrades());
-    }
-
-    private static void addPrismatics(ChampionBuildData.Game game, Map<Integer, int[]> values,
-                                      Map<Integer, TimingStats> times) {
-        for (Integer item : game.signature().prismatics()) {
-            add(values, item, game.win());
-            addItemTime(game, item, times);
-        }
-    }
-
-    private static void addAugments(ChampionBuildData.Game game, Map<Integer, Map<Integer, int[]>> values) {
-        List<Integer> augmentIds = game.signature().augments();
-        for (int slot = 0; slot < AUGMENT_SLOT_COUNT && slot < augmentIds.size(); slot++)
-            add(values, slot, augmentIds.get(slot), game.win());
-    }
-
-    private static List<Build.CoreBuildOption> toCoreBuilds(Map<String, int[]> values,
-                                                              Map<String, List<Integer>> items,
-                                                              Map<String, TimingStats> times, int totalGames) {
+    private List<Build.CoreBuildOption> toCoreBuilds() {
         List<Build.CoreBuildOption> result = new ArrayList<>();
-        List<Map.Entry<String, int[]>> entries = sortedByGames(values, String::compareTo);
+        List<Map.Entry<String, int[]>> entries = sortedByGames(coreBuilds, String::compareTo);
         for (Map.Entry<String, int[]> entry : entries) {
+            String key = entry.getKey();
             int matches = entry.getValue()[0];
             int wins = entry.getValue()[1];
-            result.add(new Build.CoreBuildOption(entry.getKey(),
-                items.getOrDefault(entry.getKey(), parseIds(entry.getKey())), matches, wins,
-                rate(wins, matches), rate(matches, totalGames), average(times.get(entry.getKey())),
-                timedMatches(times.get(entry.getKey()))));
+            List<Integer> items = coreBuildItems.get(key);
+            TimingStats timing = coreBuildTimes.get(key);
+
+            result.add(new Build.CoreBuildOption(key, items, matches, wins,
+                rate(wins, matches), rate(matches, games), average(timing), timedMatches(timing)));
         }
         return result;
     }
@@ -414,20 +370,13 @@ final class ChampionBuildEngine {
     }
 
     private static <K> void add(Map<K, int[]> values, K key, boolean win) {
-        if (key == null || key instanceof String string && string.isBlank()) return;
+        if (key == null || key instanceof String string && string.isBlank()) {
+            return;
+        }
+
         int[] stats = values.computeIfAbsent(key, ignored -> new int[2]);
         stats[0]++;
-        if (win) stats[1]++;
-    }
-
-    private static void add(Map<Integer, Map<Integer, int[]>> values, int slot, int key, boolean win) {
-        add(values.computeIfAbsent(slot, ignored -> new LinkedHashMap<>()), key, win);
-    }
-
-    private static List<Integer> parseIds(String key) {
-        if (key == null || key.isBlank()) return List.of();
-        try { return BuildUtils.parseDashList(key); }
-        catch (RuntimeException ignored) { return List.of(); }
+        stats[1] += win ? 1 : 0;
     }
 
     private static double rate(int numerator, int denominator) {

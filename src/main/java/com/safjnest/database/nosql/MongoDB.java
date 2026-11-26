@@ -2956,18 +2956,6 @@ public final class MongoDB {
         return true;
     }
 
-    public static boolean upsertChampionBuilds(List<Build> builds) {
-        if (builds == null || builds.isEmpty()) return false;
-        List<WriteModel<Document>> operations = new ArrayList<>(builds.size());
-        for (Build build : builds) if (build != null && build.filter() != null) {
-            Document update = standardBuildUpdate(build);
-            operations.add(new UpdateOneModel<>(Filters.eq("_id", build.filter().toKey()), update,
-                    new UpdateOptions().upsert(true)));
-        }
-        if (!operations.isEmpty()) bulkWrite(builds(), operations);
-        return true;
-    }
-
     public static boolean upsertChampionArena(Filter filter, ArenaBuildData arena) {
         if (arena == null) return false;
         requireArenaBuildFilter(filter);

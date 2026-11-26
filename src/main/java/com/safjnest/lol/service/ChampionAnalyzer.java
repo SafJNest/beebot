@@ -6,6 +6,7 @@ import com.safjnest.lol.champion.ChampionStatsProvider;
 import com.safjnest.lol.champion.ChampionBuildData;
 import com.safjnest.lol.champion.ChampionBuildProvider;
 import com.safjnest.lol.queue.job.Job;
+import com.safjnest.lol.model.Build;
 import com.safjnest.lol.model.ChampionStatistics;
 import com.safjnest.lol.model.ChampionStatistics.LaneSynergy;
 import com.safjnest.lol.model.ChampionStatistics.Overview;
@@ -241,7 +242,7 @@ public final class ChampionAnalyzer {
         }
         if (scopes.isEmpty()) return new MatrixResult(0, 0, 0);
         // Keep RawMatrix logic intact, then coalesce per scope
-        Map<String, ChampionBuildEngine.BuildAccumulator> builds = new LinkedHashMap<>();
+        Map<String, ChampionBuildEngine> buildEngines = new LinkedHashMap<>();
         Map<String, ArenaChampionAnalyzer.Accumulator> arenas = new LinkedHashMap<>();
         Map<String, Filter> arenaFilters = new LinkedHashMap<>();
         if (buildFilters != null) for (Filter f : buildFilters) {
@@ -252,33 +253,47 @@ public final class ChampionAnalyzer {
                     arenas.put(snapshot.toKey(), ChampionService.arenaAccumulator(snapshot));
                     arenaFilters.put(snapshot.toKey(), snapshot);
                 }
-            } else builds.putIfAbsent(f.toKey(), ChampionBuildEngine.newAccumulator(f));
+            } else {
+                buildEngines.computeIfAbsent(f.toKey(), ignored -> new ChampionBuildEngine(f));
+            }
         }
         ChampionStatsScope first = scopes.values().iterator().next();
         Filter source = Filter.championBuild(0, first.patch(), first.queue());
         ChampionBuildProvider buildProvider = new ChampionBuildProvider(source);
-        Map<Integer, List<ChampionBuildEngine.BuildAccumulator>> byChampion = new HashMap<>();
-        for (ChampionBuildEngine.BuildAccumulator accumulator : builds.values()) {
-            byChampion.computeIfAbsent(accumulator.filter().champion(), ignored -> new ArrayList<>()).add(accumulator);
+        Map<Integer, List<ChampionBuildEngine>> byChampion = new HashMap<>();
+        for (ChampionBuildEngine engine : buildEngines.values()) {
+            int champion = engine.filter().champion();
+            List<ChampionBuildEngine> engines = byChampion.computeIfAbsent(champion, ignored -> new ArrayList<>());
+            engines.add(engine);
         }
         RawMatrix raw = new RawMatrix();
         int persistedChampions = 0;
         int emptyScopes = 0;
         try {
-            MongoDB.forEachChampionRawMatchEventBatch(source, !builds.isEmpty() || !arenas.isEmpty(), job, input -> {
+            MongoDB.forEachChampionRawMatchEventBatch(source, !buildEngines.isEmpty() || !arenas.isEmpty(), job, input -> {
                 ChampionStatsData.RawMatch matchData = ChampionStatsProvider.read(input);
                 if (input.usableTimeline() && !byChampion.isEmpty()) {
                     if (job != null)
                         job.phase("PROCESS_BUILD");
                     for (Document participant : ChampionBuildProvider.participants(input)) {
-                        List<ChampionBuildEngine.BuildAccumulator> candidates = byChampion.get(participant.getInteger("champion", 0));
-                        if (candidates == null) continue;
+                        int champion = participant.getInteger("champion", 0);
+                        List<ChampionBuildEngine> candidates = byChampion.get(champion);
+                        if (candidates == null) {
+                            continue;
+                        }
+
                         ChampionBuildData.Game game = null;
-                        for (ChampionBuildEngine.BuildAccumulator accumulator : candidates) {
-                            if (!ChampionBuildProvider.matches(accumulator.filter(), input, participant)) continue;
-                            if (game == null) game = buildProvider.parse(input, participant);
-                            if (game == null) break;
-                            ChampionBuildEngine.accept(accumulator, game);
+                        for (ChampionBuildEngine engine : candidates) {
+                            if (!ChampionBuildProvider.matches(engine.filter(), input, participant)) {
+                                continue;
+                            }
+                            if (game == null) {
+                                game = buildProvider.parse(input, participant);
+                                if (game == null) {
+                                    break;
+                                }
+                            }
+                            engine.accept(game);
                         }
                     }
                 }
@@ -406,12 +421,12 @@ public final class ChampionAnalyzer {
                     MatchMemoryUtils.release(doc.champions);
                 }
             }
-            if (job != null && (!builds.isEmpty() || !arenas.isEmpty()))
+            if (job != null && (!buildEngines.isEmpty() || !arenas.isEmpty())) {
                 job.phase("PUBLISH_BUILD");
-            for (ChampionBuildEngine.BuildAccumulator acc : builds.values()) {
-                java.util.List<com.safjnest.lol.model.Build> res = ChampionBuildEngine.finish(acc);
-                if (res.isEmpty()) res = ChampionBuildEngine.emptyResult(acc.filter());
-                com.safjnest.database.nosql.MongoDB.upsertChampionBuilds(res);
+            }
+            for (ChampionBuildEngine engine : buildEngines.values()) {
+                Build build = engine.finish();
+                MongoDB.upsertChampionBuild(build);
             }
             for (var entry : arenas.entrySet()) {
                 ArenaBuildData arena = entry.getValue().finish();
@@ -420,8 +435,10 @@ public final class ChampionAnalyzer {
             return new MatrixResult(scopes.size(), emptyScopes, persistedChampions);
         } finally {
             raw.clear();
-            for (ChampionBuildEngine.BuildAccumulator accumulator : builds.values()) accumulator.clear();
-            builds.clear();
+            for (ChampionBuildEngine engine : buildEngines.values()) {
+                engine.clear();
+            }
+            buildEngines.clear();
             for (ArenaChampionAnalyzer.Accumulator accumulator : arenas.values()) accumulator.clear();
             arenas.clear();
             arenaFilters.clear();

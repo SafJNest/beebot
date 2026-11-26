@@ -24,6 +24,7 @@ import com.safjnest.database.nosql.MongoDB;
 import com.safjnest.database.redis.RedisClient;
 import com.safjnest.database.redis.RedisKey;
 import com.safjnest.lol.arena.ArenaItemCatalog;
+import com.safjnest.lol.champion.ChampionBuildProvider;
 import com.safjnest.lol.model.ApiResult;
 import com.safjnest.lol.model.ArenaBuildData;
 import com.safjnest.lol.model.Build;
@@ -181,14 +182,32 @@ public class ChampionService {
     }
 
     public boolean refreshBuild(Filter filter, Job<?> job) {
-        if (filter == null || filter.champion() == 0) return false;
+        if (filter == null || filter.champion() == 0) {
+            return false;
+        }
+
         Filter snapshot = dataFilter(filter);
         if (snapshot.queue() == GameQueueType.CHERRY) {
             ArenaItemCatalog catalog = ArenaItemCatalog.fromItems(StaticDataService.getItems(snapshot.patch()));
             return refreshArenaInternal(snapshot, catalog, job);
         }
-        boolean refreshed = ChampionBuildEngine.recompute(snapshot, job);
-        if (refreshed) invalidate(snapshot);
+
+        ChampionBuildEngine engine = new ChampionBuildEngine(snapshot);
+        boolean refreshed;
+        try {
+            ChampionBuildProvider.forEachGame(snapshot, job, engine::accept);
+            if (job != null) {
+                job.phase("PUBLISH_BUILD");
+            }
+
+            Build build = engine.finish();
+            refreshed = MongoDB.upsertChampionBuild(build);
+        } finally {
+            engine.clear();
+        }
+        if (refreshed) {
+            invalidate(snapshot);
+        }
         return refreshed;
     }
 
