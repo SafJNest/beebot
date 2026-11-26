@@ -41,8 +41,7 @@ public final class ArenaGameParser {
             Kind kind = catalog.kind(match.patch, id);
             if (kind == Kind.PRISMATIC) prismatics.add(id);
             else if (kind == Kind.BOOTS) boots.add(id);
-            else if (id != ArenaItemCatalog.PRISMATIC_ANVIL && !catalog.isJuice(id)
-                    && seenBuildItems.add(id)) buildItems.add(id);
+            else if (kind == Kind.ITEM && seenBuildItems.add(id)) buildItems.add(id);
         }
 
         int[] finalItems = finalItems(participant);
@@ -60,7 +59,7 @@ public final class ArenaGameParser {
                 finalBoots.add(id);
                 continue;
             }
-            if (id != ArenaItemCatalog.PRISMATIC_ANVIL && !catalog.isJuice(id)) finalBuild.add(id);
+            if (kind == Kind.ITEM) finalBuild.add(id);
         }
 
         Integer firstPrismatic = prismatics.isEmpty() ? null : prismatics.iterator().next();

@@ -12,8 +12,8 @@ import no.stelar7.api.r4j.pojo.lol.staticdata.item.Item;
 
 public final class ArenaItemCatalog {
 
-    public static final int PRISMATIC_ANVIL = 220007;
-    private static final int PRISMATIC_EXCEPTION = 447111;
+    private static final int FIRST_ANVIL_ITEM = 220000;
+    private static final int LAST_ANVIL_ITEM = 220011;
 
     private final Map<Integer, Kind> kinds;
     private final Set<Integer> consumables;
@@ -52,16 +52,30 @@ public final class ArenaItemCatalog {
         Set<Integer> consumables = new HashSet<>();
         Set<Integer> juices = new HashSet<>();
         if (items != null) for (Map.Entry<Integer, Item> entry : items.entrySet()) {
+            int id = entry.getKey();
             Item item = entry.getValue();
-            if (item == null) continue;
-            if (item.getName() != null && item.getName().toLowerCase(Locale.ROOT).startsWith("juice"))
-                juices.add(entry.getKey());
-            if (item.getTags() != null && item.getTags().contains("Consumable")) {
-                consumables.add(entry.getKey());
+            if (item == null) {
                 continue;
             }
-            if (ItemUtils.isBoots(item)) kinds.put(entry.getKey(), Kind.BOOTS);
-            else if (item.getDepth() == 3) kinds.put(entry.getKey(), Kind.ITEM);
+            if (item.getName() != null && item.getName().toLowerCase(Locale.ROOT).startsWith("juice")) {
+                juices.add(id);
+            }
+            if (ItemUtils.isConsumable(item)) {
+                consumables.add(id);
+                continue;
+            }
+            if (ItemUtils.isTrinket(item)) {
+                continue;
+            }
+
+            boolean availableInArena = ItemUtils.isAvailableInArena(item);
+            if (availableInArena && ItemUtils.isArenaPrismatic(id, item)) {
+                kinds.put(id, Kind.PRISMATIC);
+            } else if (ItemUtils.isBoots(item, items)) {
+                kinds.put(id, Kind.BOOTS);
+            } else if (availableInArena || item.getDepth() == 3) {
+                kinds.put(id, Kind.ITEM);
+            }
         }
         return new ArenaItemCatalog(kinds, consumables, juices, Map.of());
     }
@@ -73,15 +87,22 @@ public final class ArenaItemCatalog {
     }
 
     public Kind kind(String patch, int itemId) {
-        if (itemId <= 0 || itemId == PRISMATIC_ANVIL) return null;
+        if (itemId <= 0 || isConsumable(itemId) || isJuice(itemId)) {
+            return null;
+        }
+
         Classification override = classification(patch, itemId);
-        if (override == Classification.UNKNOWN) return null;
-        if (override == Classification.PRISMATIC || override == null && isPrismatic(itemId)) return Kind.PRISMATIC;
-        return kinds.get(itemId);
+        Kind kind = kinds.get(itemId);
+        return switch (override) {
+            case UNKNOWN -> null;
+            case PRISMATIC -> Kind.PRISMATIC;
+            case NON_PRISMATIC -> kind == Kind.PRISMATIC ? Kind.ITEM : kind;
+            case null -> kind != null ? kind : ItemUtils.isArenaPrismatic(itemId, null) ? Kind.PRISMATIC : null;
+        };
     }
 
     public boolean isConsumable(int itemId) {
-        return itemId == PRISMATIC_ANVIL || consumables.contains(itemId);
+        return (itemId >= FIRST_ANVIL_ITEM && itemId <= LAST_ANVIL_ITEM) || consumables.contains(itemId);
     }
 
     public boolean isJuice(int itemId) {
@@ -94,14 +115,7 @@ public final class ArenaItemCatalog {
 
     private Classification classification(String patch, int itemId) {
         String major = patchMajor(patch);
-        Classification value = major == null ? null : classifications.getOrDefault(major, Map.of()).get(itemId);
-        if (value != null) return value;
-        if (itemId == PRISMATIC_EXCEPTION) return Classification.NON_PRISMATIC;
-        return null;
-    }
-
-    private static boolean isPrismatic(int itemId) {
-        return itemId != PRISMATIC_EXCEPTION && ItemUtils.isPrismatic(itemId);
+        return major == null ? null : classifications.getOrDefault(major, Map.of()).get(itemId);
     }
 
     private static String patchMajor(String patch) {

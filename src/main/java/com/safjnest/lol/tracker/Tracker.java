@@ -594,7 +594,13 @@ public class Tracker {
                 if (participant.getPlayerAugment3() != 0) augmentList += "," + participant.getPlayerAugment3();
                 if (participant.getPlayerAugment4() != 0) augmentList += "," + participant.getPlayerAugment4();
 
-                List<String> prismatics = List.of(itemsIds.split(",")).stream().filter(ItemUtils::isPrismatic).collect(Collectors.toList());
+                List<String> prismatics = new ArrayList<>();
+                for (String item : itemsIds.split(",")) {
+                    int itemId = Integer.parseInt(item);
+                    if (ItemUtils.isArenaPrismatic(itemId, items.get(itemId))) {
+                        prismatics.add(item);
+                    }
+                }
                 if (!prismatics.isEmpty()) {
                     matchData.get(participant.getPuuid()).put("prismatics", String.join(",", prismatics));
                 }

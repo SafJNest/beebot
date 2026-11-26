@@ -12,15 +12,18 @@ import com.safjnest.database.nosql.MongoDB;
 import com.safjnest.database.nosql.MongoDB.ChampionRawMatch;
 import com.safjnest.lol.model.Filter;
 import com.safjnest.lol.queue.job.Job;
+import com.safjnest.lol.service.StaticDataService;
 import com.safjnest.lol.utils.ChampionBuildTimelineUtils;
 import com.safjnest.lol.utils.GameQueueTypeUtils;
+import com.safjnest.lol.utils.ItemUtils;
 
 import no.stelar7.api.r4j.basic.constants.types.lol.TierType;
+import no.stelar7.api.r4j.pojo.lol.staticdata.item.Item;
 
 public final class ChampionBuildProvider {
 
     private final Filter filter;
-    private BuildSignature.Catalog catalog;
+    private Map<Integer, Item> itemsById;
 
     public ChampionBuildProvider(Filter filter) {
         this.filter = filter;
@@ -64,29 +67,34 @@ public final class ChampionBuildProvider {
     }
 
     public ChampionBuildData.Game parse(ChampionRawMatch raw, Document participant) {
-        if (catalog == null) catalog = BuildSignature.Catalog.forPatch(filter.patch());
+        if (itemsById == null) {
+            itemsById = StaticDataService.getItems(filter.patch());
+        }
+
         String puuid = participant.getString("puuid");
-        List<ChampionBuildTimelineUtils.ItemEvent> items = ChampionBuildTimelineUtils.itemEvents(raw.timeline(), puuid);
-        List<ChampionBuildTimelineUtils.ItemEvent> starters = ChampionBuildTimelineUtils.starterItemEvents(raw.timeline(), puuid);
+        int roleBoundId = participant.getInteger("roleQuestId", 0);
+        List<ChampionBuildTimelineUtils.ItemEvent> purchases = ChampionBuildTimelineUtils.itemEvents(raw.timeline(), puuid);
         List<ChampionBuildTimelineUtils.SkillUpgrade> skills = ChampionBuildTimelineUtils.skillUpgrades(raw.timeline(), puuid);
         List<Integer> inventory = List.of(
             participant.getInteger("item0", 0), participant.getInteger("item1", 0), participant.getInteger("item2", 0),
             participant.getInteger("item3", 0), participant.getInteger("item4", 0), participant.getInteger("item5", 0),
             participant.getInteger("item6", 0));
         List<Integer> summonerSpells = List.of(participant.getInteger("summonerSpell1", 0), participant.getInteger("summonerSpell2", 0));
-        BuildSignature signature = BuildSignature.from(inventory, skillOrder(participant),
-            integers(participant, "augments"), summonerSpells, filter, catalog, items, starters, skills);
-        if (signature == null)
+        BuildSignature signature = BuildSignature.from(inventory, roleBoundId, skillOrder(participant),
+            integers(participant, "augments"), summonerSpells, itemsById, purchases, skills);
+        if (signature == null) {
             return null;
+        }
 
         RuneSignature runes = RuneSignature.from(integers(participant, "primaryRunes"),
             integers(participant, "secondaryRunes"), integers(participant, "statsRunes"));
         Map<Integer, Long> itemTimes = new LinkedHashMap<>();
-        for (ChampionBuildTimelineUtils.ItemEvent item : items) {
-            itemTimes.put(item.itemId(), item.timestampMillis());
+        for (ChampionBuildTimelineUtils.ItemEvent purchase : purchases) {
+            if (!ItemUtils.isGrantedByRune(purchase.itemId())) {
+                itemTimes.putIfAbsent(purchase.itemId(), purchase.timestampMillis());
+            }
         }
-        return new ChampionBuildData.Game(signature, runes, participant.getBoolean("win", false),
-            participant.getInteger("roleQuestId", 0), itemTimes, skills);
+        return new ChampionBuildData.Game(signature, runes, participant.getBoolean("win", false), roleBoundId, itemTimes, skills);
     }
 
     // ============================================================================

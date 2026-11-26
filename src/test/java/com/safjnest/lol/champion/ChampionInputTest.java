@@ -1,22 +1,35 @@
 package com.safjnest.lol.champion;
 
 import java.util.List;
+import java.util.Map;
 
 import org.bson.Document;
 import org.json.JSONObject;
 import org.junit.Test;
 
 import com.safjnest.database.nosql.MongoDB.ChampionRawMatch;
+import com.safjnest.lol.arena.ArenaGameParser;
+import com.safjnest.lol.arena.ArenaItemCatalog;
+import com.safjnest.lol.arena.ParsedArenaGame;
+import com.safjnest.lol.model.Build.Kind;
 import com.safjnest.lol.model.Filter;
+import com.safjnest.lol.model.match.Match;
+import com.safjnest.lol.model.match.Participant;
 import com.safjnest.lol.service.ChampionService;
+import com.safjnest.lol.utils.ChampionBuildTimelineUtils;
+import com.safjnest.lol.utils.ChampionBuildTimelineUtils.ItemEvent;
+import com.safjnest.lol.utils.ItemUtils;
+import com.safjnest.utils.JsonCodec;
 
 import no.stelar7.api.r4j.basic.constants.api.regions.LeagueShard;
 import no.stelar7.api.r4j.basic.constants.types.lol.GameQueueType;
 import no.stelar7.api.r4j.basic.constants.types.lol.LaneType;
 import no.stelar7.api.r4j.basic.constants.types.lol.TierType;
+import no.stelar7.api.r4j.pojo.lol.staticdata.item.Item;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
@@ -56,5 +69,105 @@ public class ChampionInputTest {
         JSONObject timeline = new JSONObject();
         assertSame(timeline, ChampionStatsProvider.read(new ChampionRawMatch(match, timeline, true)).metadata().events());
         assertNull(ChampionStatsProvider.read(new ChampionRawMatch(match, timeline, false)).metadata().events());
+    }
+
+    @Test
+    public void buildUsesObservedPurchasesWithUndoAndKeepsItemsSoldLater() {
+        JSONObject timeline = new JSONObject("""
+            {"participants":{"1":"player"},"item_events":[
+              {"participant":1,"timestamp":1200000,"event":"ITEM_PURCHASED","item":3089},
+              {"participant":1,"timestamp":1000,"event":"ITEM_PURCHASED","item":2031},
+              {"participant":1,"timestamp":1100,"event":"ITEM_PURCHASED","item":2010},
+              {"participant":1,"timestamp":1200,"event":"ITEM_PURCHASED","item":2422},
+              {"participant":1,"timestamp":2000,"event":"ITEM_PURCHASED","item":1055},
+              {"participant":1,"timestamp":500000,"event":"ITEM_PURCHASED","item":3078},
+              {"participant":1,"timestamp":500000,"event":"ITEM_DESTROYED","item":1028},
+              {"participant":1,"timestamp":500100,"event":"ITEM_UNDO","before":3078,"after":0},
+              {"participant":1,"timestamp":600000,"event":"ITEM_PURCHASED","item":3031},
+              {"participant":1,"timestamp":900000,"event":"ITEM_SOLD","item":3031},
+              {"participant":1,"timestamp":1500000,"event":"ITEM_PURCHASED","item":3078}
+            ]}
+            """);
+        Map<Integer, Item> items = Map.of(
+            2031, item(2031, """
+                {"tags":["Consumable"],"gold":{"purchasable":true,"total":150}}
+                """),
+            2010, item(2010, """
+                {"consumed":true,"gold":{"purchasable":true,"total":50}}
+                """),
+            2422, item(2422, """
+                {"tags":["Boots"],"gold":{"purchasable":false,"total":300}}
+                """),
+            1055, item(1055, """
+                {"depth":1,"gold":{"purchasable":true,"total":450}}
+                """),
+            3031, item(3031, """
+                {"depth":2,"from":["1038","1037","1018"],"gold":{"purchasable":true,"total":3500}}
+                """),
+            3089, item(3089, """
+                {"depth":2,"from":["1058","1058","1026"],"gold":{"purchasable":true,"total":3500}}
+                """),
+            3078, item(3078, """
+                {"depth":3,"gold":{"purchasable":true,"total":3333}}
+                """));
+        List<ItemEvent> purchases = ChampionBuildTimelineUtils.itemEvents(timeline, "player");
+        BuildSignature signature = BuildSignature.from(List.of(3089, 3078, 2422), 0,
+            List.of(), List.of(), List.of(), items, purchases, List.of());
+
+        assertNotNull(signature);
+        assertEquals(List.of(1055), signature.starter());
+        assertEquals(2422, signature.boots());
+        assertEquals(List.of(3031, 3089), signature.core());
+        assertEquals(List.of(3031, 3089, 3078), signature.fullBuild());
+        assertTrue(purchases.contains(new ItemEvent(3078, 1500000)));
+        assertFalse(purchases.contains(new ItemEvent(3078, 500000)));
+
+        List<ItemEvent> reverse = List.of(new ItemEvent(3089, 600000), new ItemEvent(3031, 1200000));
+        BuildSignature reverseSignature = BuildSignature.from(List.of(3031, 3089), 0,
+            List.of(), List.of(), List.of(), items, reverse, List.of());
+        assertEquals(List.of(3089, 3031), reverseSignature.core());
+        assertNull(BuildSignature.from(List.of(3031, 3089), 0,
+            List.of(), List.of(), List.of(), items, List.of(), List.of()));
+    }
+
+    @Test
+    public void arenaUsesPricedPrismaticsAndExcludesVouchers() {
+        Map<Integer, Item> items = Map.of(
+            226630, item(226630, """
+                {"maps":{"30":true},"gold":{"total":2750,"sell":1100},"consumeOnFull":true}
+                """),
+            226693, item(226693, """
+                {"maps":{"30":true},"gold":{"total":2750,"sell":1100}}
+                """),
+            447111, item(447111, """
+                {"maps":{"30":true},"gold":{"total":2500,"sell":1250}}
+                """),
+            220008, item(220008, """
+                {"maps":{"30":true},"gold":{"total":750,"sell":0}}
+                """),
+            2145, item(2145, """
+                {"maps":{"30":true},"tags":["Consumable"]}
+                """));
+        ArenaItemCatalog catalog = ArenaItemCatalog.fromItems(items);
+        Match match = new Match();
+        match.patch = "16.23";
+        Participant participant = new Participant();
+        participant.item0 = 220008;
+        participant.item1 = 2145;
+        participant.item2 = 226630;
+        participant.item3 = 220012;
+        participant.item4 = 447111;
+
+        ParsedArenaGame game = ArenaGameParser.parse(match, participant, catalog);
+
+        assertEquals(List.of(226630, 220012), game.prismatics());
+        assertEquals(List.of(447111), game.fallbackBuildItems());
+        assertEquals(Kind.PRISMATIC, catalog.kind("16.23", 226693));
+        assertFalse(ItemUtils.isConsumable(items.get(226630)));
+    }
+
+    private static Item item(int id, String data) {
+        JSONObject fields = new JSONObject(data).put("id", id);
+        return JsonCodec.fromJson(fields.toString(), Item.class);
     }
 }

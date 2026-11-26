@@ -13,7 +13,6 @@ public final class ChampionBuildTimelineUtils {
 
     private static final int SKILL_ORDER_LENGTH = 18;
     private static final int MAX_SKILL_SLOT = 4;
-    private static final long STARTER_WINDOW_MILLIS = 2 * 60 * 1000L;
 
     private ChampionBuildTimelineUtils() {}
 
@@ -90,74 +89,50 @@ public final class ChampionBuildTimelineUtils {
     }
 
     public static List<ItemEvent> itemEvents(Object rawEvents, String puuid) {
-        return itemEvents(rawEvents, puuid, Long.MAX_VALUE);
-    }
-
-    public static List<ItemEvent> starterItemEvents(Object rawEvents, String puuid) {
-        return itemEvents(rawEvents, puuid, STARTER_WINDOW_MILLIS);
-    }
-
-    private static List<ItemEvent> itemEvents(Object rawEvents, String puuid, long beforeTimestamp) {
-        if (puuid == null || puuid.isBlank()) return List.of();
+        if (puuid == null || puuid.isBlank()) {
+            return List.of();
+        }
         JSONObject events = json(rawEvents);
-        if (events == null) return List.of();
+        if (events == null) {
+            return List.of();
+        }
         JSONObject refs = object(events, "participants");
         JSONArray items = array(events, "item_events");
-        if (refs == null || items == null) return List.of();
+        if (refs == null || items == null) {
+            return List.of();
+        }
 
         List<JSONObject> ordered = new ArrayList<>();
-        for (int i = 0; i < items.length(); i++) {
-            JSONObject item = items.optJSONObject(i);
+        for (int index = 0; index < items.length(); index++) {
+            JSONObject item = items.optJSONObject(index);
             if (item != null && item.optLong("timestamp", -1) >= 0
-                    && item.optLong("timestamp", -1) < beforeTimestamp
-                    && puuid.equals(resolve(item.opt("participant"), refs))) ordered.add(item);
+                    && puuid.equals(resolve(item.opt("participant"), refs))) {
+                ordered.add(item);
+            }
         }
         ordered.sort(Comparator.comparingLong(item -> item.optLong("timestamp", Long.MAX_VALUE)));
 
-        List<ItemAcquisition> active = new ArrayList<>();
-        List<ItemAcquisition> previous = null;
+        List<ItemEvent> purchases = new ArrayList<>();
         for (JSONObject event : ordered) {
-            String type = event.optString("event", "");
-            long timestamp = event.optLong("timestamp", -1);
-            int item = event.optInt("item", 0);
-            int before = event.optInt("before", 0);
-            int after = event.optInt("after", 0);
-            if (timestamp < 0) continue;
-            if ("ITEM_UNDO".equals(type)) {
-                if (previous != null) {
-                    active = previous;
-                    previous = null;
-                } else if (after > 0) {
-                    removeLast(active, after);
-                } else if (before > 0 && active.stream().noneMatch(acquisition -> acquisition.itemId() == before)) {
-                    active.add(new ItemAcquisition(before, timestamp));
+            String type = event.optString("event");
+            int before = event.optInt("before");
+            if ("ITEM_UNDO".equals(type) && before > 0) {
+                for (int index = purchases.size() - 1; index >= 0; index--) {
+                    if (purchases.get(index).itemId() == before) {
+                        purchases.remove(index);
+                        break;
+                    }
                 }
-                continue;
-            }
-
-            previous = new ArrayList<>(active);
-            if ("ITEM_PURCHASED".equals(type)) {
-                if (before > 0 && after > 0 && before != after) removeLast(active, before);
-                int acquired = after > 0 ? after : item;
-                if (acquired > 0) active.add(new ItemAcquisition(acquired, timestamp));
-            } else if ("ITEM_SOLD".equals(type) || "ITEM_DESTROYED".equals(type)) {
-                removeLast(active, before > 0 ? before : item);
+            } else if ("ITEM_PURCHASED".equals(type)) {
+                int after = event.optInt("after");
+                int itemId = after > 0 ? after : event.optInt("item");
+                if (itemId > 0) {
+                    long timestamp = event.getLong("timestamp");
+                    purchases.add(new ItemEvent(itemId, timestamp));
+                }
             }
         }
-        active.sort(Comparator.comparingLong(ItemAcquisition::timestampMillis));
-        List<ItemEvent> result = new ArrayList<>(active.size());
-        for (ItemAcquisition acquisition : active)
-            result.add(new ItemEvent(acquisition.itemId(), acquisition.timestampMillis()));
-        return List.copyOf(result);
-    }
-
-    private static void removeLast(List<ItemAcquisition> acquisitions, int itemId) {
-        for (int i = acquisitions.size() - 1; i >= 0; i--) {
-            if (acquisitions.get(i).itemId() == itemId) {
-                acquisitions.remove(i);
-                return;
-            }
-        }
+        return List.copyOf(purchases);
     }
 
     private static JSONObject json(Object raw) {
@@ -200,8 +175,6 @@ public final class ChampionBuildTimelineUtils {
     public record SkillUpgrade(Integer championLevel, int skillSlot, long timestampMillis) {}
 
     public record ItemEvent(int itemId, long timestampMillis) {}
-
-    private record ItemAcquisition(int itemId, long timestampMillis) {}
 
     private record LevelEvent(long timestampMillis, int level) {}
 }

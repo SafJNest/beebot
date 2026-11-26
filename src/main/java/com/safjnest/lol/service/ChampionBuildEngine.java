@@ -10,11 +10,9 @@ import com.safjnest.lol.utils.ChampionBuildTimelineUtils;
 
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 final class ChampionBuildEngine {
 
@@ -248,13 +246,11 @@ final class ChampionBuildEngine {
     }
 
     private void addSlots(BuildSignature signature, Map<Integer, Long> purchaseTimes, boolean win) {
-        Set<Integer> excluded = coreExcluded(signature);
-        int slot = 0;
-        for (int item : signature.fullBuild()) {
-            if (excluded.contains(item) || signature.starter().contains(item)) {
-                continue;
-            }
-
+        List<Integer> fullBuild = signature.fullBuild();
+        int coreSize = signature.core().size();
+        int slotCount = Math.min(SLOT_COUNT, fullBuild.size() - coreSize);
+        for (int slot = 0; slot < slotCount; slot++) {
+            int item = fullBuild.get(coreSize + slot);
             Map<Integer, int[]> options = slots.computeIfAbsent(slot, ignored -> new LinkedHashMap<>());
             add(options, item, win);
 
@@ -263,11 +259,6 @@ final class ChampionBuildEngine {
                 Map<Integer, TimingStats> timings = slotTimes.computeIfAbsent(slot, ignored -> new LinkedHashMap<>());
                 TimingStats timing = timings.computeIfAbsent(item, ignored -> new TimingStats());
                 timing.add(acquiredAt / 1000.0);
-            }
-
-            slot++;
-            if (slot == SLOT_COUNT) {
-                break;
             }
         }
     }
@@ -348,15 +339,6 @@ final class ChampionBuildEngine {
 
     private static int timedMatches(TimingStats timing) {
         return timing == null ? 0 : timing.count;
-    }
-
-    private static Set<Integer> coreExcluded(BuildSignature signature) {
-        Set<Integer> excluded = new HashSet<>(signature.core());
-        excluded.add(signature.boots());
-        excluded.add(signature.suppItem());
-        excluded.addAll(signature.prismatics());
-        excluded.addAll(signature.augments());
-        return excluded;
     }
 
     private static <K> List<Map.Entry<K, int[]>> sortedByGames(Map<K, int[]> values,
