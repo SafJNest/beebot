@@ -118,8 +118,8 @@ public final class MongoDB {
     private static final String COMPRESSED_STORAGE_ENGINE_CONFIG = "block_compressor=zstd";
     private static final String MATCH_FACETS_COLLECTION = "match_facets";
     private static final Logger CHAMPION_INPUT_LOG = LoggerFactory.getLogger("ChampionInput");
-    private static final int CHAMPION_MATCH_BATCH_SIZE = 1_000;
-    private static final int CHAMPION_EVENT_BATCH_SIZE = 200;
+    private static final int CHAMPION_MATCH_BATCH_SIZE = 2_000;
+    private static final int CHAMPION_EVENT_BATCH_SIZE = 1_000;
     private static final int CHAMPION_BUILD_MAX_BSON_BYTES = 16 * 1024 * 1024 - 256 * 1024;
     private static final List<String> CHAMPION_BUILD_PARTICIPANT_PROJECTION_FIELDS = List.of(
             "participants.id", "participants.puuid", "participants.champion", "participants.lane", "participants.win",
@@ -168,7 +168,7 @@ public final class MongoDB {
     }
 
     public static final String PRODUCTION_DATABASE = "beebot_test"; //cant rename mongo db...
-    public static final String TEST_DATABASE = "beebot_test_test";
+    public static final String TEST_DATABASE = "beebot_test";
     private static final String MONGO_URI_ERROR = "Mongo URI is missing from settings.json";
     private static MongoClient client;
     private static MongoDatabase database;

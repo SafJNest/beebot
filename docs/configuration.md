@@ -102,8 +102,8 @@ Standard queues return `builds` at the top level with `defaultBuildId` and
 core in its build at `coreBuilds[0].id`. A completed snapshot with no eligible
 variants returns `200` with `builds: []`. Arena returns its dedicated `build` field.
 
-The champion reader holds up to 1,000 match IDs per group and requests event
-cursor batches of 200 documents. Its logs report Mongo cursor time, event
+The champion reader holds up to 2,000 match IDs per group and requests event
+cursor batches of up to 1,000 documents. Its logs report Mongo cursor time, event
 validation and parse time, input consumption time and timeline coverage.
 
 ## Cloudflare and media
