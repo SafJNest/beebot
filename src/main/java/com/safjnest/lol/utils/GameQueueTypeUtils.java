@@ -24,7 +24,8 @@ public class GameQueueTypeUtils {
   );
   private static final List<GameQueueType> LEADERBOARD_QUEUES = List.of(
     GameQueueType.RANKED_SOLO_5X5,
-    GameQueueType.RANKED_FLEX_SR
+    GameQueueType.RANKED_FLEX_SR,
+    GameQueueType.RANKED_PREMADE_5X5
   );
 
   private static final List<GameQueueType> RANKED_QUEUES = List.of(
