@@ -120,13 +120,7 @@ public final class MongoDB {
     private static final Logger CHAMPION_INPUT_LOG = LoggerFactory.getLogger("ChampionInput");
     private static final int CHAMPION_MATCH_BATCH_SIZE = 1_000;
     private static final int CHAMPION_EVENT_BATCH_SIZE = 200;
-    private static final int CHAMPION_BUILD_AGGREGATE_VERSION = 3;
-    private static final int CHAMPION_BUILD_SNAPSHOT_VERSION = 1;
     private static final int CHAMPION_BUILD_MAX_BSON_BYTES = 16 * 1024 * 1024 - 256 * 1024;
-    private static final List<String> CHAMPION_STANDARD_BUILD_FIELDS = List.of(
-            "filter", "games", "wins", "winrate", "coreBuilds", "coreItems", "starters", "boots",
-            "supportItems", "roleBoundItems", "slots", "runes", "summonerSpells", "skillOrders",
-            "prismatics", "augments");
     private static final List<String> CHAMPION_BUILD_PARTICIPANT_PROJECTION_FIELDS = List.of(
             "participants.id", "participants.puuid", "participants.champion", "participants.lane", "participants.win",
             "participants.boots", "participants.subTeamPlacement",
@@ -1714,18 +1708,24 @@ public final class MongoDB {
     }
 
     public static Build findChampionBuild(Filter filter) {
-        Document document = championBuildDocument(filter, Projections.exclude("buildSnapshot"));
-        if (document == null)
-            return null;
-        championBuildUpdatedAt(filter, document);
-        if (filter.queue() == GameQueueType.CHERRY) {
-            if (document.get("build") instanceof Map<?, ?> payload) {
-                ArenaBuildData arena = readStructured(payload.get("arena"), ArenaBuildData.class);
-                if (arena != null)
-                    return Build.fromArena(filter, arena);
+        if (filter.queue() != GameQueueType.CHERRY) {
+            ChampionBuildSnapshot snapshot = findChampionBuildSnapshot(filter);
+            if (snapshot == null) {
+                return null;
             }
-        } else {
-            return readStandardChampionBuild(filter, document);
+            return snapshot.builds().isEmpty() ? Build.empty(filter) : snapshot.builds().getFirst();
+        }
+
+        Document document = championBuildDocument(filter, null);
+        if (document == null) {
+            return null;
+        }
+        championBuildUpdatedAt(filter, document);
+        if (document.get("build") instanceof Map<?, ?> payload) {
+            ArenaBuildData arena = readStructured(payload.get("arena"), ArenaBuildData.class);
+            if (arena != null) {
+                return Build.fromArena(filter, arena);
+            }
         }
         throw invalidChampionAggregate("build", filter.toKey(), "Invalid build payload");
     }
@@ -1745,16 +1745,11 @@ public final class MongoDB {
             return builds().find(Filters.and(Filters.eq("_id", key), Filters.exists("build.arena")))
                 .projection(projection).first();
         }
-        Document document = builds().find(Filters.eq("_id", key)).projection(projection).first();
-        return document != null ? document : builds().find(Filters.eq("filterKey", key))
-            .sort(Sorts.descending("buildVersion")).projection(projection).first();
+        return builds().find(Filters.eq("_id", key)).projection(projection).first();
     }
 
     private static long championBuildUpdatedAt(Filter filter, Document document) {
         boolean arena = filter.queue() == GameQueueType.CHERRY;
-        if (!arena && number(document, "buildVersion") != CHAMPION_BUILD_AGGREGATE_VERSION)
-            throw invalidChampionAggregate("build", filter.toKey(), "Stored build version "
-                + number(document, "buildVersion") + ", expected " + CHAMPION_BUILD_AGGREGATE_VERSION);
         long updatedAt = number(document, arena ? "arenaLastUpdate" : "lastUpdate");
         if (updatedAt <= 0)
             throw invalidChampionAggregate("build", filter.toKey(), "Missing build update timestamp");
@@ -1766,8 +1761,19 @@ public final class MongoDB {
             "champion_" + component + "_invalid", cause + " for " + component + " key=" + key);
     }
 
-        public static List<Filter> findStoredChampionBuildFilters() {
-        return readFilters(builds(), false);
+    public static List<Filter> findStoredChampionBuildFilters() {
+        List<Filter> result = new ArrayList<>();
+        for (Document document : builds().find().projection(Projections.include("_id"))) {
+            if (!(document.get("_id") instanceof String key)) {
+                continue;
+            }
+            try {
+                result.add(Filter.fromKey(key));
+            } catch (RuntimeException ignored) {
+                // Ignore invalid filter keys when planning refreshes.
+            }
+        }
+        return result;
     }
 
     public static List<Filter> findChampionBuildRefreshFilters(String patch) {
@@ -1777,20 +1783,8 @@ public final class MongoDB {
     // Old champion_statistics flow removed — use ChampionStatsDocument with scope
 
     public static long findChampionBuildLastUpdate(Filter filter) {
-        Document document = championBuildDocument(filter, Projections.include("buildVersion", "lastUpdate", "arenaLastUpdate"));
+        Document document = championBuildDocument(filter, Projections.include("lastUpdate", "arenaLastUpdate"));
         return document == null ? 0 : championBuildUpdatedAt(filter, document);
-    }
-
-    public static long findChampionBuildSnapshotLastUpdate(Filter filter) {
-        if (filter.queue() == GameQueueType.CHERRY) {
-            return findChampionBuildLastUpdate(filter);
-        }
-        Document document = championBuildDocument(filter, Projections.include("buildVersion", "lastUpdate",
-            "buildSnapshot.version", "buildSnapshot.updatedAt"));
-        if (document == null || currentChampionBuildSnapshot(document) == null) {
-            return 0;
-        }
-        return championBuildUpdatedAt(filter, document);
     }
 
     public static List<GameQueueType> findChampionQueues(String patch) {
@@ -2964,14 +2958,11 @@ public final class MongoDB {
     }
 
     public static boolean upsertChampionBuild(ChampionBuildSnapshot snapshot) {
-        if (snapshot == null || snapshot.aggregate().filter() == null) {
+        if (snapshot == null) {
             return false;
         }
-        String key = snapshot.aggregate().filter().toKey();
-        Document update = standardBuildUpdate(snapshot);
-        UpdateResult result = builds().updateOne(Filters.eq("_id", key), update,
-            new UpdateOptions().upsert(true));
-        if (!result.wasAcknowledged()) throw new IllegalStateException("Champion build update was not acknowledged");
+        Document document = standardBuildDocument(snapshot);
+        replace(builds(), document);
         return true;
     }
 
@@ -3098,7 +3089,6 @@ public final class MongoDB {
                 case "com.safjnest.lol.model.match.Match" -> readMatch(record);
                 case "com.safjnest.lol.model.match.MatchResult" -> readMatchResult(record);
                 case "com.safjnest.lol.model.statistics.ProfileStatistics" -> readProfileStatistics(QueryRecordParser.toDocument(record));
-                case "com.safjnest.lol.model.Build" -> readBuild(QueryRecordParser.toDocument(record));
                 default -> readStructured(QueryRecordParser.toDocument(record), type);
             };
             return type.cast(value);
@@ -3865,21 +3855,6 @@ public final class MongoDB {
         return result;
     }
 
-    private static List<Filter> readFilters(MongoCollection<Document> collection, boolean generic) {
-        Map<String, Filter> result = new LinkedHashMap<>();
-        for (Document document : collection.find().projection(Projections.include("filterKey"))) {
-            String key = document.getString("filterKey");
-            if (key == null) continue;
-            try {
-                Filter filter = generic ? Filter.fromGenericKey(key) : Filter.fromKey(key);
-                result.putIfAbsent(key, filter);
-            } catch (RuntimeException ignored) {
-                // Invalid historical filters are ignored; they are reported by migration verification.
-            }
-        }
-        return new ArrayList<>(result.values());
-    }
-
     private static void readProfileRefreshFilters(
             MongoCollection<Document> collection,
             String puuid,
@@ -4053,16 +4028,6 @@ public final class MongoDB {
         return readStructured(values, ProfileRecord.class);
     }
 
-    private static Build readBuild(Document document) {
-        if (!(document.get("build") instanceof Map<?, ?> value)) return null;
-        Map<String, Object> standard = new LinkedHashMap<>();
-        for (var entry : value.entrySet()) {
-            if (!(entry.getKey() instanceof String key)) return null;
-            if (!"arena".equals(key)) standard.put(key, entry.getValue());
-        }
-        return readStructured(standard, Build.class);
-    }
-
     private static <T> T readStructured(Object value, Class<T> type) {
         return JsonCodec.fromDocument(value, type);
     }
@@ -4093,44 +4058,32 @@ public final class MongoDB {
         return Updates.combine(updates);
     }
 
-    static Document standardBuildUpdate(ChampionBuildSnapshot snapshot) {
-        Build build = snapshot.aggregate();
-        if (build.arena() != null) throw new IllegalArgumentException("Arena requires its dedicated build.arena write path");
-        long updatedAt = System.currentTimeMillis();
-        Document payload = JsonCodec.toDocument(build);
+    static Document standardBuildDocument(ChampionBuildSnapshot snapshot) {
+        Filter filter = snapshot.filter();
+        if (filter.queue() == GameQueueType.CHERRY) {
+            throw new IllegalArgumentException("Arena requires its dedicated build.arena write path");
+        }
+        String key = filter.toKey();
         List<Document> variants = new ArrayList<>(snapshot.builds().size());
         for (Build variant : snapshot.builds()) {
             variants.add(JsonCodec.toDocument(variant));
         }
-        Document ranked = new Document("version", CHAMPION_BUILD_SNAPSHOT_VERSION)
-            .append("updatedAt", updatedAt)
+        Document document = new Document("_id", key)
+            .append("lastUpdate", System.currentTimeMillis())
             .append("builds", variants)
             .append("defaultBuildId", snapshot.defaultBuildId())
             .append("bestAdjustedWinrateBuildId", snapshot.bestAdjustedWinrateBuildId());
-        Document fields = new Document("games", build.games())
-            .append("winrate", build.winrate())
-            .append("buildVersion", CHAMPION_BUILD_AGGREGATE_VERSION)
-            .append("lastUpdate", updatedAt)
-            .append("buildSnapshot", ranked);
-        for (String field : CHAMPION_STANDARD_BUILD_FIELDS) fields.put("build." + field, payload.get(field));
-        Document update = new Document("$set", fields)
-            .append("$setOnInsert", new Document("filterKey", build.filter().toKey()));
-        requireChampionBuildSize(update);
-        return update;
+        requireChampionBuildSize(document);
+        return document;
     }
 
     static ChampionBuildSnapshot readChampionBuildSnapshot(Filter filter, Document document) {
         if (document == null) {
             return null;
         }
-        Document ranked = currentChampionBuildSnapshot(document);
-        if (ranked == null) {
-            return null;
-        }
         championBuildUpdatedAt(filter, document);
         String key = filter.toKey();
-        Build aggregate = readStandardChampionBuild(filter, document);
-        if (!(ranked.get("builds") instanceof List<?> rows)) {
+        if (!(document.get("builds") instanceof List<?> rows)) {
             throw invalidChampionAggregate("build", key, "Missing build variants");
         }
         List<Build> variants = new ArrayList<>(rows.size());
@@ -4143,29 +4096,11 @@ public final class MongoDB {
             variants.add(variant);
         }
         try {
-            return new ChampionBuildSnapshot(aggregate, variants, ranked.getString("defaultBuildId"),
-                ranked.getString("bestAdjustedWinrateBuildId"));
+            return new ChampionBuildSnapshot(filter, variants, document.getString("defaultBuildId"),
+                document.getString("bestAdjustedWinrateBuildId"));
         } catch (IllegalArgumentException | ClassCastException | NullPointerException failure) {
             throw invalidChampionAggregate("build", key, "Invalid build variant selection");
         }
-    }
-
-    private static Document currentChampionBuildSnapshot(Document document) {
-        // A legacy writer can update the aggregate after a rollback while leaving the ranked section in place.
-        if (document.get("buildSnapshot") instanceof Document ranked
-                && number(ranked, "version") == CHAMPION_BUILD_SNAPSHOT_VERSION
-                && number(ranked, "updatedAt") == number(document, "lastUpdate")) {
-            return ranked;
-        }
-        return null;
-    }
-
-    static Build readStandardChampionBuild(Filter filter, Document document) {
-        Build build = readBuild(document);
-        if (!isStandardChampionBuild(build)) {
-            throw invalidChampionAggregate("build", filter.toKey(), "Invalid build payload");
-        }
-        return build;
     }
 
     private static boolean isStandardChampionBuild(Build build) {

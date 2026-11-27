@@ -126,17 +126,13 @@ final class BuildCoreStats {
 
     ChampionBuildSnapshot snapshot(Filter filter) {
         int count = cores.size();
-        Options totals = new Options();
-        List<Build.CoreBuildOption> coreOptions = new ArrayList<>(count);
         int[] coreMatches = new int[count];
         int[] coreWins = new int[count];
         for (int index = 0; index < count; index++) {
             Options core = cores.get(index);
-            Build.CoreBuildOption option = coreOption(index);
-            coreOptions.add(option);
-            coreMatches[index] = option.matches();
-            coreWins[index] = option.wins();
-            totals.merge(core);
+            int row = core.firstRow[COMPLETION];
+            coreMatches[index] = core.matches.getInt(row);
+            coreWins[index] = core.wins.getInt(row);
         }
 
         boolean rankWinrate = filter.queue() != GameQueueType.CHERRY;
@@ -149,19 +145,16 @@ final class BuildCoreStats {
         for (int position = 0; position < indices.size(); position++) {
             int index = indices.getInt(position);
             Options core = cores.get(index);
-            Build.CoreBuildOption option = coreOptions.get(index);
+            Build.CoreBuildOption option = coreOption(index);
             if (position == 0) {
                 defaultBuildId = option.id();
             }
             if (index == ranking.bestAdjustedWinrateIndex()) {
                 bestAdjustedWinrateBuildId = option.id();
             }
-            builds.add(toBuild(filter, core, option.matches(), option.wins(), List.of(option), true));
+            builds.add(toBuild(filter, core, option));
         }
-        coreOptions.sort(Comparator.comparingInt(Build.CoreBuildOption::matches).reversed()
-            .thenComparing(Build.CoreBuildOption::id));
-        Build aggregate = toBuild(filter, totals, games, wins, coreOptions, false);
-        return new ChampionBuildSnapshot(aggregate, builds, defaultBuildId, bestAdjustedWinrateBuildId);
+        return new ChampionBuildSnapshot(filter, builds, defaultBuildId, bestAdjustedWinrateBuildId);
     }
 
     void clear() {
@@ -190,31 +183,29 @@ final class BuildCoreStats {
             matches, won, rate(won, matches), rate(matches, games), core.averageSeconds(row), core.timed.getInt(row));
     }
 
-    private Build toBuild(Filter filter, Options options, int total, int won,
-                          List<Build.CoreBuildOption> coreOptions, boolean variant) {
+    private Build toBuild(Filter filter, Options options, Build.CoreBuildOption core) {
+        int total = core.matches();
         List<Build.Option> coreItems = options.items(CORE_FIRST, total, true);
-        if (variant) {
-            coreItems.addAll(options.items(CORE_SECOND, total, true));
-        }
+        coreItems.addAll(options.items(CORE_SECOND, total, true));
         List<Build.Option> starters = options.items(STARTER, total, false);
         starters.sort(Comparator.comparingInt(Build.Option::matches).reversed().thenComparing(Build.Option::id));
         List<List<Build.Option>> itemSlots = options.slots(ITEM_SLOT, ITEM_SLOT_COUNT, total, true);
         List<List<Build.Option>> augments = options.slots(AUGMENT_SLOT, AUGMENT_SLOT_COUNT, total, false);
         List<Build.SkillOrderOption> skills = options.skills.toOptions(total);
 
-        return new Build(filter, total, won, rate(won, total), coreOptions, coreItems, starters,
+        return new Build(filter, total, core.wins(), core.winrate(), List.of(core), coreItems, starters,
             options.items(BOOTS, total, true), options.items(SUPPORT, total, true),
-            options.items(ROLE_BOUND, total, true), itemSlots, runeOptions(options, total, variant),
+            options.items(ROLE_BOUND, total, true), itemSlots, runeOptions(options, total),
             spellOptions(options, total), skills, options.items(PRISMATIC, total, true), augments);
     }
 
-    private List<Build.RuneOption> runeOptions(Options options, int total, boolean variant) {
+    private List<Build.RuneOption> runeOptions(Options options, int total) {
         Map<String, RuneGroup> groups = new HashMap<>();
         for (int row = options.firstRow[RUNE_PAGE]; row >= 0; row = options.nextRow.getInt(row)) {
             int id = (int) options.keys.getLong(row);
             RuneSignature page = runePages.get(id);
             RuneGroup group = groups.computeIfAbsent(page.toKey(), ignored -> new RuneGroup());
-            group.add(id, page, options.matches.getInt(row), options.wins.getInt(row), variant);
+            group.add(page, options.matches.getInt(row), options.wins.getInt(row));
         }
 
         List<Build.RuneOption> result = new ArrayList<>(groups.size());
@@ -270,41 +261,23 @@ final class BuildCoreStats {
 
         void record(int column, int id, int win, long time) {
             long key = pair(column, id);
-            add(key, 1, win, Math.max(0, time), time < 0 ? 0 : 1);
-        }
-
-        void merge(Options core) {
-            for (int row = 0; row < core.keys.size(); row++) {
-                long key = core.keys.getLong(row);
-                int column = (int) (key >>> 32);
-                if (column == COMPLETION) {
-                    continue;
-                }
-                if (column == CORE_SECOND) {
-                    key = pair(CORE_FIRST, (int) key);
-                }
-                add(key, core.matches.getInt(row), core.wins.getInt(row), core.elapsed.getLong(row), core.timed.getInt(row));
-            }
-            skills.merge(core.skills);
-        }
-
-        private void add(long key, int count, int victories, long millis, int timedCount) {
             int index = indices.getOrDefault(key, -1);
+            long millis = Math.max(0, time);
+            int timedCount = time < 0 ? 0 : 1;
             if (index < 0) {
-                int column = (int) (key >>> 32);
                 index = keys.size();
                 indices.put(key, index);
                 nextRow.add(firstRow[column]);
                 firstRow[column] = index;
                 keys.add(key);
-                matches.add(count);
-                wins.add(victories);
+                matches.add(1);
+                wins.add(win);
                 elapsed.add(millis);
                 timed.add(timedCount);
                 return;
             }
-            matches.set(index, matches.getInt(index) + count);
-            wins.set(index, wins.getInt(index) + victories);
+            matches.set(index, matches.getInt(index) + 1);
+            wins.set(index, wins.getInt(index) + win);
             elapsed.set(index, elapsed.getLong(index) + millis);
             timed.set(index, timed.getInt(index) + timedCount);
         }
@@ -354,37 +327,24 @@ final class BuildCoreStats {
     private static final class RuneGroup {
 
         private RuneSignature best;
-        private int bestId;
         private int bestCount;
-        private int bestWins;
         private int matches;
         private int wins;
 
-        void add(int id, RuneSignature page, int count, int won, boolean preferPopular) {
+        void add(RuneSignature page, int count, int won) {
             matches += count;
             wins += won;
-            if (best == null || betterPage(id, page, count, won, preferPopular)) {
+            if (best == null || betterPage(page, count)) {
                 best = page;
-                bestId = id;
                 bestCount = count;
-                bestWins = won;
             }
         }
 
-        private boolean betterPage(int id, RuneSignature page, int count, int won, boolean preferPopular) {
+        private boolean betterPage(RuneSignature page, int count) {
             boolean complete = page.statShards().size() == 3;
             boolean bestComplete = best.statShards().size() == 3;
             if (complete != bestComplete) {
                 return complete;
-            }
-            if (!complete && !preferPopular) {
-                return id < bestId;
-            }
-            if (!preferPopular) {
-                int winrate = Double.compare(rate(won, count), rate(bestWins, bestCount));
-                if (winrate != 0) {
-                    return winrate > 0;
-                }
             }
             if (count != bestCount) {
                 return count > bestCount;

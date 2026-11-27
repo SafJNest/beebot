@@ -86,7 +86,7 @@ public class ChampionBuildEngineTest {
         ChampionBuildSnapshot ranked = ChampionBuildSnapshotStorageTest.roundTrip(engine.finish());
         List<Build> variants = ranked.builds();
 
-        assertEquals(engine.filter().toKey(), ranked.aggregate().filter().toKey());
+        assertEquals(engine.filter().toKey(), ranked.filter().toKey());
         assertEquals(2, variants.size());
         assertEquals("4628-6655", ranked.defaultBuildId());
         assertEquals("6655-4628", ranked.bestAdjustedWinrateBuildId());
@@ -128,26 +128,11 @@ public class ChampionBuildEngineTest {
         assertEquals(new Build.SkillTiming(1, 2, 30.37, samples), actualSkills.timedOrder().getFirst());
         assertEquals(new Build.SkillTiming(1, 2, 40.37, samples), reversedSkills.timedOrder().getFirst());
 
-        Build aggregate = ranked.aggregate();
-        assertEquals(2 * samples, aggregate.games());
-        assertEquals(2, aggregate.coreBuilds().size());
-        assertEquals(2, aggregate.itemSlots().getFirst().size());
-        assertEquals(2 * samples, aggregate.bootOptions().getFirst().matches());
-        assertEquals(2, aggregate.runeOptions().size());
-        Build.SkillOrderOption aggregateSkills = aggregate.skillOrders().getFirst();
-        assertEquals(2 * samples, aggregateSkills.matches());
-        assertEquals(new Build.SkillTiming(1, 2, 35.37, 2 * samples), aggregateSkills.timedOrder().getFirst());
-        Build.Option ludens = aggregate.coreItems().stream().filter(item -> item.itemId() == 6655).findFirst().orElseThrow();
-        assertEquals(2 * samples, ludens.matches());
-        assertEquals(Integer.valueOf(2 * samples), ludens.timedMatches());
-        assertEquals(1130.911, ludens.averagePurchaseTimeSeconds(), 0.000001);
-
         engine.clear();
         ChampionBuildSnapshot empty = engine.finish();
         assertTrue(empty.builds().isEmpty());
         assertNull(empty.defaultBuildId());
         assertNull(empty.bestAdjustedWinrateBuildId());
-        assertTrue(empty.aggregate().itemSlots().isEmpty());
     }
 
     @Test
@@ -174,7 +159,6 @@ public class ChampionBuildEngineTest {
         assertEquals(1, variant.wins());
         assertEquals("6655-4628", ranked.defaultBuildId());
         assertNull(ranked.bestAdjustedWinrateBuildId());
-        assertEquals(alternative, ranked.aggregate().runeOptions().getFirst().configuration());
     }
 
     @Test

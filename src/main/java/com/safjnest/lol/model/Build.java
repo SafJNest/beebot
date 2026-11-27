@@ -53,6 +53,11 @@ public record Build(
 
     public enum Kind { ITEM, BOOTS, PRISMATIC, AUGMENT }
 
+    public static Build empty(Filter filter) {
+        return new Build(filter, 0, 0, 0, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(),
+            List.of(), List.of(), List.of(), List.of(), List.of(), List.of());
+    }
+
     public static Build fromArena(Filter filter, ArenaBuildData arena) {
         if (arena == null) return null;
         long total = arena.games();

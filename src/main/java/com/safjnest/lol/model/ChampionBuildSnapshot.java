@@ -3,11 +3,11 @@ package com.safjnest.lol.model;
 import java.util.List;
 import java.util.Objects;
 
-public record ChampionBuildSnapshot(Build aggregate, List<Build> builds, String defaultBuildId,
+public record ChampionBuildSnapshot(Filter filter, List<Build> builds, String defaultBuildId,
                                     String bestAdjustedWinrateBuildId) {
 
     public ChampionBuildSnapshot {
-        Objects.requireNonNull(aggregate);
+        Objects.requireNonNull(filter);
         builds = List.copyOf(builds);
 
         String firstId = null;

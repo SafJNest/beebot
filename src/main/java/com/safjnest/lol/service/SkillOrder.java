@@ -73,25 +73,6 @@ final class SkillOrder {
         }
     }
 
-    void merge(SkillOrder source) {
-        for (int from = 0; from < source.keys.size(); from++) {
-            long key = source.keys.getLong(from);
-            int points = points(key);
-            int to = getOrCreateRow(key, points);
-            matches.set(to, matches.getInt(to) + source.matches.getInt(from));
-            wins.set(to, wins.getInt(to) + source.wins.getInt(from));
-
-            int fromOffset = source.offsets.getInt(from);
-            int toOffset = offsets.getInt(to);
-            for (int point = 0; point < points; point++) {
-                int fromIndex = fromOffset + point;
-                int toIndex = toOffset + point;
-                elapsedMillis.set(toIndex, elapsedMillis.getLong(toIndex) + source.elapsedMillis.getLong(fromIndex));
-                timedMatches.set(toIndex, timedMatches.getInt(toIndex) + source.timedMatches.getInt(fromIndex));
-            }
-        }
-    }
-
     List<Build.SkillOrderOption> toOptions(int totalGames) {
         List<Build.SkillOrderOption> result = new ArrayList<>(keys.size());
         for (int row = 0; row < keys.size(); row++) {

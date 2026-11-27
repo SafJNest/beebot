@@ -158,7 +158,7 @@ public class ChampionService {
     }
 
     public boolean buildFresh(Filter filter) {
-        return !isStale(MongoDB.findChampionBuildSnapshotLastUpdate(filter));
+        return !isStale(MongoDB.findChampionBuildLastUpdate(filter));
     }
 
     public Map<Integer, ChampionStatistics> getStatisticsAll(Filter filter) {
