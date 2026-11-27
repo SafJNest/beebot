@@ -74,18 +74,18 @@ public final class ChampionBuildProvider {
         String puuid = participant.getString("puuid");
         int roleBoundId = participant.getInteger("roleQuestId", 0);
         List<ChampionBuildTimelineUtils.ItemEvent> purchases = ChampionBuildTimelineUtils.itemEvents(raw.timeline(), puuid);
-        List<ChampionBuildTimelineUtils.SkillUpgrade> skills = ChampionBuildTimelineUtils.skillUpgrades(raw.timeline(), puuid);
         List<Integer> inventory = List.of(
             participant.getInteger("item0", 0), participant.getInteger("item1", 0), participant.getInteger("item2", 0),
             participant.getInteger("item3", 0), participant.getInteger("item4", 0), participant.getInteger("item5", 0),
             participant.getInteger("item6", 0));
         List<Integer> summonerSpells = List.of(participant.getInteger("summonerSpell1", 0), participant.getInteger("summonerSpell2", 0));
         BuildSignature signature = BuildSignature.from(inventory, roleBoundId, skillOrder(participant),
-            integers(participant, "augments"), summonerSpells, itemsById, purchases, skills);
+            integers(participant, "augments"), summonerSpells, itemsById, purchases);
         if (signature == null) {
             return null;
         }
 
+        ChampionBuildTimelineUtils.SkillEvents skills = ChampionBuildTimelineUtils.skillEvents(raw.timeline(), puuid);
         RuneSignature runes = RuneSignature.from(integers(participant, "primaryRunes"),
             integers(participant, "secondaryRunes"), integers(participant, "statsRunes"));
         Map<Integer, Long> itemTimes = new LinkedHashMap<>();

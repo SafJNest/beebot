@@ -112,7 +112,7 @@ public class ChampionInputTest {
                 """));
         List<ItemEvent> purchases = ChampionBuildTimelineUtils.itemEvents(timeline, "player");
         BuildSignature signature = BuildSignature.from(List.of(3089, 3078, 2422), 0,
-            List.of(), List.of(), List.of(), items, purchases, List.of());
+            List.of(), List.of(), List.of(), items, purchases);
 
         assertNotNull(signature);
         assertEquals(List.of(1055), signature.starter());
@@ -124,10 +124,10 @@ public class ChampionInputTest {
 
         List<ItemEvent> reverse = List.of(new ItemEvent(3089, 600000), new ItemEvent(3031, 1200000));
         BuildSignature reverseSignature = BuildSignature.from(List.of(3031, 3089), 0,
-            List.of(), List.of(), List.of(), items, reverse, List.of());
+            List.of(), List.of(), List.of(), items, reverse);
         assertEquals(List.of(3089, 3031), reverseSignature.core());
         assertNull(BuildSignature.from(List.of(3031, 3089), 0,
-            List.of(), List.of(), List.of(), items, List.of(), List.of()));
+            List.of(), List.of(), List.of(), items, List.of()));
     }
 
     @Test

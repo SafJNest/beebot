@@ -30,8 +30,7 @@ public record BuildSignature(
 
     static BuildSignature from(List<Integer> inventory, int roleBoundId, List<Integer> skillOrder,
                                List<Integer> augments, List<Integer> summonerSpells, Map<Integer, Item> items,
-                               List<ChampionBuildTimelineUtils.ItemEvent> purchases,
-                               List<ChampionBuildTimelineUtils.SkillUpgrade> skillUpgrades) {
+                               List<ChampionBuildTimelineUtils.ItemEvent> purchases) {
         List<Integer> fullBuild = new ArrayList<>();
         int starter = 0;
         for (ChampionBuildTimelineUtils.ItemEvent purchase : purchases) {
@@ -63,7 +62,6 @@ public record BuildSignature(
             }
         }
 
-        List<Integer> spellOrder = ChampionBuildTimelineUtils.skillOrder(skillOrder, skillUpgrades);
         List<Integer> augmentIds = new ArrayList<>();
         for (int id : augments) {
             if (id != 0) {
@@ -80,7 +78,7 @@ public record BuildSignature(
         Collections.sort(summonerSpellIds);
 
         return new BuildSignature(starterItems, boots, supportItem, core, List.copyOf(fullBuild),
-            List.copyOf(spellOrder), List.of(), List.copyOf(augmentIds), List.copyOf(summonerSpellIds));
+            List.copyOf(skillOrder), List.of(), List.copyOf(augmentIds), List.copyOf(summonerSpellIds));
     }
 
     public String toCoreKey() {

@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
+import org.json.JSONObject;
 import org.junit.Test;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -30,6 +31,7 @@ import no.stelar7.api.r4j.basic.constants.types.lol.GameQueueType;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
@@ -81,6 +83,34 @@ public class ChampionControllerTest {
         assertFalse(body.has("build"));
         assertFalse(body.path("builds").get(0).has("filter"));
         assertSame(popular, snapshot.defaultBuild());
+    }
+
+    @Test
+    public void storedBuildReturnsOneSkillOrderAndOnlySummonerSpellsHavePairFields() {
+        Filter filter = Filter.championBuild(145, "16.26", GameQueueType.TEAM_BUILDER_RANKED_SOLO);
+        Build original = new Build(filter, List.of(), List.of(), List.of(new Build.SlotOption(3102, 6, 2 / 6d)),
+            List.of(6672, 3124), List.of(), List.of(), List.of(new Build.SlotOption(407, 200, 0.51)),
+            List.of(), List.of(1, 3, 2, 1), null, 200, 0.51);
+        JSONObject stored = new JSONObject(original.toJson());
+        JSONObject order = stored.getJSONArray("skillOrders").getJSONObject(0).put("id", "1-3-2-1").put("matches", 50);
+        stored.getJSONArray("skillOrders").put(new JSONObject(order.toString()).put("order", List.of(1, 2, 3, 1)));
+        Build restored = Build.fromJson(stored.toString());
+        assertNotNull(restored);
+        ChampionBuildSnapshot snapshot = new ChampionBuildSnapshot(filter, List.of(restored), "6672-3124", null);
+        ChampionView page = new ChampionView(new ChampionView.Champion(145, "Kai'Sa", null), null, snapshot, null);
+
+        JsonNode build = readyBody(page).at("/builds/0");
+
+        assertEquals(1, build.path("skillOrders").size());
+        assertEquals(3, build.at("/skillOrders/0/order/1").asInt());
+        assertEquals(2, build.at("/skillOrders/0").size());
+        assertFalse(build.has("skillEvolutions"));
+        JsonNode supportItem = build.at("/supportItems/0");
+        assertEquals("3102", supportItem.path("id").asText());
+        assertFalse(supportItem.has("spell1"));
+        assertFalse(supportItem.has("spell2"));
+        assertEquals(4, build.at("/summonerSpells/0/spell1").asInt());
+        assertEquals(7, build.at("/summonerSpells/0/spell2").asInt());
     }
 
     @Test

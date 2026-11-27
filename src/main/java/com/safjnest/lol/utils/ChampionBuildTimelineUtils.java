@@ -1,7 +1,6 @@
 package com.safjnest.lol.utils;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -11,81 +10,52 @@ import org.json.JSONObject;
 
 public final class ChampionBuildTimelineUtils {
 
-    private static final int SKILL_ORDER_LENGTH = 18;
     private static final int MAX_SKILL_SLOT = 4;
+    private static final SkillEvents EMPTY_SKILLS = new SkillEvents(List.of(), List.of());
 
     private ChampionBuildTimelineUtils() {}
 
-    public static List<Integer> skillOrder(JSONArray fallback, List<SkillUpgrade> upgrades) {
-        List<Integer> fallbackOrder = new ArrayList<>();
-        if (fallback != null) {
-            StringBuilder rawSkillOrder = new StringBuilder();
-            for (int index = 0; index < fallback.length(); index++)
-                rawSkillOrder.append(fallback.optString(index, ""));
-            for (int index = 0; index < rawSkillOrder.length(); index++) {
-                int slot = Character.getNumericValue(rawSkillOrder.charAt(index));
-                fallbackOrder.add(slot >= 1 && slot <= MAX_SKILL_SLOT ? slot : 0);
-            }
+    public static SkillEvents skillEvents(Object rawEvents, String puuid) {
+        if (puuid == null || puuid.isBlank()) {
+            return EMPTY_SKILLS;
         }
-        return skillOrder(fallbackOrder, upgrades);
-    }
-
-    public static List<Integer> skillOrder(List<Integer> fallback, List<SkillUpgrade> upgrades) {
-        List<Integer> result = new ArrayList<>(Collections.nCopies(SKILL_ORDER_LENGTH, 0));
-        if (upgrades != null && !upgrades.isEmpty()) {
-            int fallbackLevel = 1;
-            for (SkillUpgrade upgrade : upgrades) {
-                int level = upgrade.championLevel() == null ? fallbackLevel : upgrade.championLevel();
-                fallbackLevel = Math.max(fallbackLevel + 1, level + 1);
-                if (level >= 1 && level <= result.size()
-                        && upgrade.skillSlot() >= 1 && upgrade.skillSlot() <= MAX_SKILL_SLOT)
-                    result.set(level - 1, upgrade.skillSlot());
-            }
-            return result;
-        }
-        if (fallback == null) return result;
-        for (int index = 0; index < Math.min(result.size(), fallback.size()); index++) {
-            Integer slot = fallback.get(index);
-            if (slot != null && slot >= 1 && slot <= MAX_SKILL_SLOT) result.set(index, slot);
-        }
-        return result;
-    }
-
-    public static List<SkillUpgrade> skillUpgrades(Object rawEvents, String puuid) {
-        if (puuid == null || puuid.isBlank()) return List.of();
         JSONObject events = json(rawEvents);
-        if (events == null) return List.of();
+        if (events == null) {
+            return EMPTY_SKILLS;
+        }
         JSONObject refs = object(events, "participants");
         JSONArray skills = array(events, "skill_events");
-        if (refs == null || skills == null) return List.of();
-
-        List<LevelEvent> levels = new ArrayList<>();
-        JSONArray levelEvents = array(events, "level_events");
-        if (levelEvents != null) for (int i = 0; i < levelEvents.length(); i++) {
-            JSONObject level = levelEvents.optJSONObject(i);
-            if (level == null || !puuid.equals(resolve(level.opt("participant"), refs))) continue;
-            long timestamp = level.optLong("timestamp", -1);
-            int value = level.optInt("level", 0);
-            if (timestamp >= 0 && value > 0) levels.add(new LevelEvent(timestamp, value));
+        if (refs == null || skills == null) {
+            return EMPTY_SKILLS;
         }
-        levels.sort(Comparator.comparingLong(LevelEvent::timestampMillis));
 
-        List<SkillUpgrade> result = new ArrayList<>();
+        List<SkillUpgrade> upgrades = new ArrayList<>();
+        List<SkillUpgrade> evolutions = null;
         for (int i = 0; i < skills.length(); i++) {
             JSONObject skill = skills.optJSONObject(i);
-            if (skill == null || !puuid.equals(resolve(skill.opt("participant"), refs))) continue;
+            if (skill == null || !puuid.equals(resolve(skill.opt("participant"), refs))) {
+                continue;
+            }
             long timestamp = skill.optLong("timestamp", -1);
             int slot = skill.optInt("skill_slot", 0);
-            if (timestamp < 0 || slot < 1 || slot > 4) continue;
-            Integer championLevel = null;
-            for (LevelEvent level : levels) {
-                if (level.timestampMillis() > timestamp) break;
-                championLevel = level.level();
+            if (timestamp < 0 || slot < 1 || slot > MAX_SKILL_SLOT) {
+                continue;
             }
-            result.add(new SkillUpgrade(championLevel, slot, timestamp));
+            SkillUpgrade upgrade = new SkillUpgrade(slot, timestamp);
+            if ("EVOLVE".equals(skill.optString("level_up_type"))) {
+                if (evolutions == null) {
+                    evolutions = new ArrayList<>(4);
+                }
+                evolutions.add(upgrade);
+            } else {
+                upgrades.add(upgrade);
+            }
         }
-        result.sort(Comparator.comparingLong(SkillUpgrade::timestampMillis));
-        return List.copyOf(result);
+        upgrades.sort(Comparator.comparingLong(SkillUpgrade::timestampMillis));
+        if (evolutions != null) {
+            evolutions.sort(Comparator.comparingLong(SkillUpgrade::timestampMillis));
+        }
+        return new SkillEvents(upgrades, evolutions == null ? List.of() : evolutions);
     }
 
     public static List<ItemEvent> itemEvents(Object rawEvents, String puuid) {
@@ -172,9 +142,10 @@ public final class ChampionBuildTimelineUtils {
         return refs == null ? key : refs.optString(key, null);
     }
 
-    public record SkillUpgrade(Integer championLevel, int skillSlot, long timestampMillis) {}
+    public record SkillUpgrade(int skillSlot, long timestampMillis) {}
+
+    public record SkillEvents(List<SkillUpgrade> upgrades, List<SkillUpgrade> evolutions) {}
 
     public record ItemEvent(int itemId, long timestampMillis) {}
 
-    private record LevelEvent(long timestampMillis, int level) {}
 }

@@ -102,6 +102,14 @@ Standard queues return `builds` at the top level with `defaultBuildId` and
 core in its build at `coreBuilds[0].id`. A completed snapshot with no eligible
 variants returns `200` with `builds: []`. Arena returns its dedicated `build` field.
 
+Each standard build returns at most one entry in `skillOrders`, with the most
+played sequence in `order`. Its `timedOrder` averages each ability rank over
+the timed games in the core and reports the sample count in `timedMatches`.
+In each timing, `level` is the
+one-based position in `order`. When the timeline contains typed evolution
+events, `skillEvolutions` reports the most played evolution sequence and its
+timings in the same format. `spell1` and `spell2` appear under `summonerSpells`.
+
 The champion reader holds up to 2,000 match IDs per group and requests event
 cursor batches of up to 1,000 documents. Its logs report Mongo cursor time, event
 validation and parse time, input consumption time and timeline coverage.

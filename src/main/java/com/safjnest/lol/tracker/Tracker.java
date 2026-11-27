@@ -45,6 +45,7 @@ import no.stelar7.api.r4j.basic.constants.api.regions.LeagueShard;
 import no.stelar7.api.r4j.basic.constants.types.KillType;
 import no.stelar7.api.r4j.basic.constants.types.lol.GameQueueType;
 import no.stelar7.api.r4j.basic.constants.types.lol.LaneType;
+import no.stelar7.api.r4j.basic.constants.types.lol.LevelUpType;
 import no.stelar7.api.r4j.basic.constants.types.lol.MatchlistMatchType;
 import no.stelar7.api.r4j.basic.constants.types.lol.TierDivisionType;
 import no.stelar7.api.r4j.pojo.lol.league.LeagueEntry;
@@ -743,12 +744,16 @@ public class Tracker {
                             break;
                         }
                         case SKILL_LEVEL_UP: {
+                            LevelUpType levelUpType = event.getLevelUpType();
                             JSONObject skillEvent = createTimelineEvent(event);
                             skillEvent.put("participant", event.getParticipantId());
                             skillEvent.put("skill_slot", event.getSkillSlot());
+                            if (levelUpType != null) {
+                                skillEvent.put("level_up_type", levelUpType.name());
+                            }
                             skillEvents.put(skillEvent);
 
-                            if (matchData.get(participantId) == null) break;
+                            if (levelUpType == LevelUpType.EVOLVE || matchData.get(participantId) == null) break;
                             String skillList = matchData.get(participantId).getOrDefault("skill_order", "");
                             if (skillList.isEmpty()) skillList = event.getSkillSlot() + "";
                             else skillList += "," + event.getSkillSlot();

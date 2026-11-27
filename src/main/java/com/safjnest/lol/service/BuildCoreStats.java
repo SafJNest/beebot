@@ -7,6 +7,7 @@ import com.safjnest.lol.model.Build;
 import com.safjnest.lol.model.ChampionBuildSnapshot;
 import com.safjnest.lol.model.Filter;
 import com.safjnest.lol.utils.BuildUtils;
+import com.safjnest.lol.utils.ChampionBuildTimelineUtils.SkillEvents;
 
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 import it.unimi.dsi.fastutil.ints.IntList;
@@ -121,7 +122,14 @@ final class BuildCoreStats {
             core.record(SPELLS, id, win, NO_TIMESTAMP);
         }
 
-        core.skills.accept(signature.spellOrder(), game.skillUpgrades(), game.win());
+        SkillEvents skills = game.skills();
+        core.skills.accept(signature.spellOrder(), skills.upgrades());
+        if (!skills.evolutions().isEmpty()) {
+            if (core.evolutions == null) {
+                core.evolutions = new SkillOrder();
+            }
+            core.evolutions.accept(List.of(), skills.evolutions());
+        }
     }
 
     ChampionBuildSnapshot snapshot(Filter filter) {
@@ -191,12 +199,14 @@ final class BuildCoreStats {
         starters.sort(Comparator.comparingInt(Build.Option::matches).reversed().thenComparing(Build.Option::id));
         List<List<Build.Option>> itemSlots = options.slots(ITEM_SLOT, ITEM_SLOT_COUNT, total, true);
         List<List<Build.Option>> augments = options.slots(AUGMENT_SLOT, AUGMENT_SLOT_COUNT, total, false);
-        List<Build.SkillOrderOption> skills = options.skills.toOptions(total);
+        Build.SkillOrderOption order = options.skills.recommended();
+        List<Build.SkillOrderOption> skills = order == null ? List.of() : List.of(order);
+        Build.SkillOrderOption evolutions = options.evolutions == null ? null : options.evolutions.recommended();
 
         return new Build(filter, total, core.wins(), core.winrate(), List.of(core), coreItems, starters,
             options.items(BOOTS, total, true), options.items(SUPPORT, total, true),
             options.items(ROLE_BOUND, total, true), itemSlots, runeOptions(options, total),
-            spellOptions(options, total), skills, options.items(PRISMATIC, total, true), augments);
+            spellOptions(options, total), skills, evolutions, options.items(PRISMATIC, total, true), augments, null);
     }
 
     private List<Build.RuneOption> runeOptions(Options options, int total) {
@@ -218,14 +228,17 @@ final class BuildCoreStats {
         return result;
     }
 
-    private List<Build.Option> spellOptions(Options options, int total) {
-        List<Build.Option> result = new ArrayList<>();
+    private List<Build.SummonerSpellOption> spellOptions(Options options, int total) {
+        List<Build.SummonerSpellOption> result = new ArrayList<>();
         for (int row = options.firstRow[SPELLS]; row >= 0; row = options.nextRow.getInt(row)) {
             int pairId = (int) options.keys.getLong(row);
             String id = BuildUtils.joinInts(spellPairs.get(pairId));
-            result.add(options.option(row, id, total, false));
+            int count = options.matches.getInt(row);
+            int won = options.wins.getInt(row);
+            result.add(new Build.SummonerSpellOption(id, count, won, rate(won, count), rate(count, total)));
         }
-        result.sort(Comparator.comparingInt(Build.Option::matches).reversed().thenComparing(Build.Option::id));
+        result.sort(Comparator.comparingInt(Build.SummonerSpellOption::matches).reversed()
+            .thenComparing(Build.SummonerSpellOption::id));
         return result;
     }
 
@@ -248,6 +261,7 @@ final class BuildCoreStats {
         private final int[] firstRow = new int[AUGMENT_SLOT + AUGMENT_SLOT_COUNT];
         private final IntArrayList nextRow = new IntArrayList();
         private final SkillOrder skills = new SkillOrder();
+        private SkillOrder evolutions;
 
         Options() {
             Arrays.fill(firstRow, -1);
