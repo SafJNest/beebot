@@ -94,9 +94,13 @@ the optional fallback for instances without R2. See [R2 credentials](https://dev
 
 For `GET /api/lol/champion/{champion}`, `202` includes `metadata.filter`,
 `metadata.missing` (`stats`, `build`, or both) and `metadata.jobIds`. Follow those
-PIDs on `/api/status` and in the `ChampionJob` and `ChampionInput` logs. Incompatible
-aggregates return `502`. A failed lookup or recent job failure returns `503`.
-A finished aggregate with zero eligible games returns `200`.
+PIDs on `/api/status` and in the `ChampionJob` and `ChampionInput` logs. Invalid
+stored data returns `502`. A failed lookup or recent job failure returns `503`.
+
+Standard queues return `builds` at the top level with `defaultBuildId` and
+`bestAdjustedWinrateBuildId` when available. Each ID matches the ID of the single
+core in its build at `coreBuilds[0].id`. A completed snapshot with no eligible
+variants returns `200` with `builds: []`. Arena returns its dedicated `build` field.
 
 The champion reader holds up to 1,000 match IDs per group and requests event
 cursor batches of 200 documents. Its logs report Mongo cursor time, event

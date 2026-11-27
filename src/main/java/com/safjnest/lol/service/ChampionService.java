@@ -63,7 +63,15 @@ public class ChampionService {
     private static final Logger LOG = LoggerFactory.getLogger(ChampionService.class);
 
     public record MatrixRefreshResult(int combinations, int skipped, int generated, int empty, int persistedChampions) {}
-    public record ChampionData(ChampionStatistics stats, Build build) {}
+    public record ChampionData(ChampionStatistics stats, ChampionBuildSnapshot snapshot, Build arenaBuild) {
+        public Build build() {
+            return snapshot == null ? arenaBuild : snapshot.defaultBuild();
+        }
+
+        boolean hasBuild() {
+            return snapshot != null || arenaBuild != null;
+        }
+    }
 
     private record Availability(long statsUpdatedAt, long buildUpdatedAt) {
         boolean missingStats() { return statsUpdatedAt == 0; }
@@ -114,11 +122,7 @@ public class ChampionService {
             .setRank(rank).setRegion(region).setLane(role);
         Availability availability = availability(filter);
         if (availability.missing()) {
-            ChampionWork work = schedule(filter, availability.missingStats(), availability.missingBuild());
-            List<String> missing = availability.missingStats()
-                ? (availability.missingBuild() ? List.of("stats", "build") : List.of("stats"))
-                : List.of("build");
-            return ApiResult.pending(ResponseMetadata.championPending(availability.lastUpdate(), filter, missing, work.jobIds()));
+            return pending(filter, availability);
         }
 
         boolean statsStale = isStale(availability.statsUpdatedAt());
@@ -133,18 +137,24 @@ public class ChampionService {
 
         String key = RedisKey.CHAMPION_PAGE.of(filter.champion(), filter.pageKey());
         CachedPage cached = RedisClient.get(key, CachedPage.class);
+        boolean arena = selectedQueue == GameQueueType.CHERRY;
         ChampionView rawPage;
         if (cached != null && availability.equals(cached.availability()) && cached.page() != null
-                && cached.page().stats() != null && cached.page().build() != null) {
+                && cached.page().stats() != null && (arena ? cached.page().build() != null : cached.page().builds() != null)) {
             rawPage = cached.page();
         } else {
             ChampionData data = readData(filter);
+            if (data.stats() == null || !data.hasBuild()) {
+                Availability remaining = new Availability(data.stats() == null ? 0 : availability.statsUpdatedAt(),
+                    data.hasBuild() ? availability.buildUpdatedAt() : 0);
+                return pending(filter, remaining);
+            }
             rawPage = new ChampionView(new ChampionView.Champion(champion.getId(), champion.getName(),
-                ChampionUtils.getChampionProfilePic(champion.getId())), data.stats(), data.build());
+                ChampionUtils.getChampionProfilePic(champion.getId())), data.stats(), data.snapshot(), data.arenaBuild());
             RedisClient.set(RedisKey.CHAMPION_PAGE, new CachedPage(availability, rawPage), filter.champion(), filter.pageKey());
         }
-        ChampionView page = new ChampionView(rawPage.champion(), MatchupRankingAnalyzer.rank(rawPage.stats()),
-            rawPage.build(), ResponseMetadata.of(availability.lastUpdate(), statsStale || buildStale, filter));
+        ChampionView page = rawPage.withStatistics(MatchupRankingAnalyzer.rank(rawPage.stats()),
+            ResponseMetadata.of(availability.lastUpdate(), statsStale || buildStale, filter));
         return ApiResult.ready(page, page.metadata());
     }
 
@@ -152,9 +162,9 @@ public class ChampionService {
         Filter snapshot = dataFilter(filter);
         Availability availability = availability(snapshot);
         if (!availability.missing())
-            return CompletableFuture.completedFuture(readData(snapshot));
+            return CompletableFuture.completedFuture(readRequiredData(snapshot));
         return schedule(snapshot, availability.missingStats(), availability.missingBuild())
-            .future().thenApplyAsync(ignored -> readData(snapshot));
+            .future().thenApplyAsync(ignored -> readRequiredData(snapshot));
     }
 
     public boolean buildFresh(Filter filter) {
@@ -452,6 +462,14 @@ public class ChampionService {
         }
     }
 
+    private static ApiResult<ChampionView> pending(Filter filter, Availability availability) {
+        ChampionWork work = schedule(filter, availability.missingStats(), availability.missingBuild());
+        List<String> missing = availability.missingStats()
+            ? (availability.missingBuild() ? List.of("stats", "build") : List.of("stats"))
+            : List.of("build");
+        return ApiResult.pending(ResponseMetadata.championPending(availability.lastUpdate(), filter, missing, work.jobIds()));
+    }
+
     private static Availability availability(Filter filter) {
         ChampionStatsScope scope = ChampionStatsScope.from(filter);
         try {
@@ -468,16 +486,23 @@ public class ChampionService {
     private static ChampionData readData(Filter filter) {
         try {
             ChampionStatsDocument document = MongoDB.findChampionStatsDocument(ChampionStatsScope.from(filter), true);
-            Build build = MongoDB.findChampionBuild(filter);
-            if (document == null || !document.ready || build == null)
+            if (document != null && !document.ready) {
                 throw new Exception(Exception.Type.UNAVAILABLE, "champion_data_changed",
                     "Champion snapshot is no longer available for " + filter.toKey());
-            ChampionNode node = document.champions.get(filter.champion());
-            ChampionLeafStats leaf = node == null ? null
-                : (filter.lane() == null ? node.overall() : node.lanes.get(filter.lane().name()));
-            ChampionStatistics stats = leaf != null && leaf.games > 0
-                ? ChampionAnalyzer.toChampionStatistics(filter, document, node, leaf) : ChampionAnalyzer.empty(filter);
-            return new ChampionData(stats, build);
+            }
+
+            boolean arena = filter.queue() == GameQueueType.CHERRY;
+            ChampionBuildSnapshot snapshot = arena ? null : MongoDB.findChampionBuildSnapshot(filter);
+            Build arenaBuild = arena ? MongoDB.findChampionArenaBuild(filter) : null;
+            ChampionStatistics stats = null;
+            if (document != null) {
+                ChampionNode node = document.champions.get(filter.champion());
+                ChampionLeafStats leaf = node == null ? null
+                    : (filter.lane() == null ? node.overall() : node.lanes.get(filter.lane().name()));
+                stats = leaf != null && leaf.games > 0
+                    ? ChampionAnalyzer.toChampionStatistics(filter, document, node, leaf) : ChampionAnalyzer.empty(filter);
+            }
+            return new ChampionData(stats, snapshot, arenaBuild);
         } catch (MongoException failure) {
             throw lookupFailure(filter, failure);
         } catch (Exception failure) {
@@ -485,6 +510,15 @@ public class ChampionService {
                 + " code=" + failure.getCode() + " cause=" + failure.getMessage());
             throw failure;
         }
+    }
+
+    private static ChampionData readRequiredData(Filter filter) {
+        ChampionData data = readData(filter);
+        if (data.stats() == null || !data.hasBuild()) {
+            throw new Exception(Exception.Type.UNAVAILABLE, "champion_data_changed",
+                "Champion snapshot is no longer available for " + filter.toKey());
+        }
+        return data;
     }
 
     private static Exception lookupFailure(Filter filter, MongoException failure) {

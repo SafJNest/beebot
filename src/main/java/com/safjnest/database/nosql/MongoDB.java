@@ -1707,15 +1707,7 @@ public final class MongoDB {
         return findProfileStatistics(puuids, Filter.summoner(seasonStart, 0));
     }
 
-    public static Build findChampionBuild(Filter filter) {
-        if (filter.queue() != GameQueueType.CHERRY) {
-            ChampionBuildSnapshot snapshot = findChampionBuildSnapshot(filter);
-            if (snapshot == null) {
-                return null;
-            }
-            return snapshot.builds().isEmpty() ? Build.empty(filter) : snapshot.builds().getFirst();
-        }
-
+    public static Build findChampionArenaBuild(Filter filter) {
         Document document = championBuildDocument(filter, null);
         if (document == null) {
             return null;

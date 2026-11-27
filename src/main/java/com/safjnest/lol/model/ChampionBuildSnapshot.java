@@ -26,4 +26,8 @@ public record ChampionBuildSnapshot(Filter filter, List<Build> builds, String de
             throw new IllegalArgumentException("Champion build selection does not match the variants");
         }
     }
+
+    public Build defaultBuild() {
+        return builds.isEmpty() ? Build.empty(filter) : builds.getFirst();
+    }
 }
