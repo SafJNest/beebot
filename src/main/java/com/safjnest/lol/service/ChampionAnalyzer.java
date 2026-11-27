@@ -6,7 +6,7 @@ import com.safjnest.lol.champion.ChampionStatsProvider;
 import com.safjnest.lol.champion.ChampionBuildData;
 import com.safjnest.lol.champion.ChampionBuildProvider;
 import com.safjnest.lol.queue.job.Job;
-import com.safjnest.lol.model.Build;
+import com.safjnest.lol.model.ChampionBuildSnapshot;
 import com.safjnest.lol.model.ChampionStatistics;
 import com.safjnest.lol.model.ChampionStatistics.LaneSynergy;
 import com.safjnest.lol.model.ChampionStatistics.Overview;
@@ -425,8 +425,8 @@ public final class ChampionAnalyzer {
                 job.phase("PUBLISH_BUILD");
             }
             for (ChampionBuildEngine engine : buildEngines.values()) {
-                Build build = engine.finish();
-                MongoDB.upsertChampionBuild(build);
+                ChampionBuildSnapshot snapshot = engine.finish();
+                MongoDB.upsertChampionBuild(snapshot);
             }
             for (var entry : arenas.entrySet()) {
                 ArenaBuildData arena = entry.getValue().finish();

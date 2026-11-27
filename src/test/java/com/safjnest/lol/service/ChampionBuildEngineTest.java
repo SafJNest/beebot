@@ -1,10 +1,12 @@
 package com.safjnest.lol.service;
 
+import com.safjnest.database.nosql.ChampionBuildSnapshotStorageTest;
 import com.safjnest.database.nosql.MongoDB.ChampionRawMatch;
 import com.safjnest.lol.champion.ChampionBuildData.Game;
 import com.safjnest.lol.champion.ChampionBuildProvider;
 import com.safjnest.lol.champion.RuneSignature;
 import com.safjnest.lol.model.Build;
+import com.safjnest.lol.model.ChampionBuildSnapshot;
 import com.safjnest.lol.model.Filter;
 import com.safjnest.lol.utils.ChampionBuildTimelineUtils.SkillUpgrade;
 import com.safjnest.lol.utils.MatchupTimelineUtils;
@@ -81,13 +83,14 @@ public class ChampionBuildEngineTest {
             arena.accept(real);
             arena.accept(reverse);
         }
-        BuildCoreStats.Variants ranked = engine.finishVariants();
+        ChampionBuildSnapshot ranked = ChampionBuildSnapshotStorageTest.roundTrip(engine.finish());
         List<Build> variants = ranked.builds();
 
+        assertEquals(engine.filter().toKey(), ranked.aggregate().filter().toKey());
         assertEquals(2, variants.size());
         assertEquals("4628-6655", ranked.defaultBuildId());
         assertEquals("6655-4628", ranked.bestAdjustedWinrateBuildId());
-        BuildCoreStats.Variants rankedArena = arena.finishVariants();
+        ChampionBuildSnapshot rankedArena = arena.finish();
         assertEquals(2, rankedArena.builds().size());
         assertEquals("4628-6655", rankedArena.defaultBuildId());
         assertNull(rankedArena.bestAdjustedWinrateBuildId());
@@ -125,7 +128,7 @@ public class ChampionBuildEngineTest {
         assertEquals(new Build.SkillTiming(1, 2, 30.37, samples), actualSkills.timedOrder().getFirst());
         assertEquals(new Build.SkillTiming(1, 2, 40.37, samples), reversedSkills.timedOrder().getFirst());
 
-        Build aggregate = engine.finish();
+        Build aggregate = ranked.aggregate();
         assertEquals(2 * samples, aggregate.games());
         assertEquals(2, aggregate.coreBuilds().size());
         assertEquals(2, aggregate.itemSlots().getFirst().size());
@@ -140,11 +143,11 @@ public class ChampionBuildEngineTest {
         assertEquals(1130.911, ludens.averagePurchaseTimeSeconds(), 0.000001);
 
         engine.clear();
-        BuildCoreStats.Variants empty = engine.finishVariants();
+        ChampionBuildSnapshot empty = engine.finish();
         assertTrue(empty.builds().isEmpty());
         assertNull(empty.defaultBuildId());
         assertNull(empty.bestAdjustedWinrateBuildId());
-        assertTrue(engine.finish().itemSlots().isEmpty());
+        assertTrue(empty.aggregate().itemSlots().isEmpty());
     }
 
     @Test
@@ -164,14 +167,14 @@ public class ChampionBuildEngineTest {
             engine.accept(common);
         }
 
-        BuildCoreStats.Variants ranked = engine.finishVariants();
+        ChampionBuildSnapshot ranked = engine.finish();
         Build.RuneOption variant = ranked.builds().getFirst().runeOptions().getFirst();
         assertEquals(original, variant.configuration());
         assertEquals(20, variant.matches());
         assertEquals(1, variant.wins());
         assertEquals("6655-4628", ranked.defaultBuildId());
         assertNull(ranked.bestAdjustedWinrateBuildId());
-        assertEquals(alternative, engine.finish().runeOptions().getFirst().configuration());
+        assertEquals(alternative, ranked.aggregate().runeOptions().getFirst().configuration());
     }
 
     @Test

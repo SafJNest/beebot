@@ -28,6 +28,7 @@ import com.safjnest.lol.champion.ChampionBuildProvider;
 import com.safjnest.lol.model.ApiResult;
 import com.safjnest.lol.model.ArenaBuildData;
 import com.safjnest.lol.model.Build;
+import com.safjnest.lol.model.ChampionBuildSnapshot;
 import com.safjnest.lol.model.ChampionStatistics;
 import com.safjnest.lol.model.ChampionTierList;
 import com.safjnest.lol.model.ChampionTierSource;
@@ -157,7 +158,7 @@ public class ChampionService {
     }
 
     public boolean buildFresh(Filter filter) {
-        return !isStale(MongoDB.findChampionBuildLastUpdate(filter));
+        return !isStale(MongoDB.findChampionBuildSnapshotLastUpdate(filter));
     }
 
     public Map<Integer, ChampionStatistics> getStatisticsAll(Filter filter) {
@@ -200,8 +201,8 @@ public class ChampionService {
                 job.phase("PUBLISH_BUILD");
             }
 
-            Build build = engine.finish();
-            refreshed = MongoDB.upsertChampionBuild(build);
+            ChampionBuildSnapshot buildSnapshot = engine.finish();
+            refreshed = MongoDB.upsertChampionBuild(buildSnapshot);
         } finally {
             engine.clear();
         }
@@ -300,8 +301,10 @@ public class ChampionService {
         List<Filter> missing = missingMatrixFilters(combinations, readyKeys);
         List<Filter> pendingBuilds = new ArrayList<>();
         for (Filter filter : buildFilters) {
-            if (force || !buildFresh(filter))
-                pendingBuilds.add(filter);
+            Filter snapshot = dataFilter(filter);
+            if (force || !buildFresh(snapshot)) {
+                pendingBuilds.add(snapshot);
+            }
         }
         ChampionAnalyzer.MatrixResult result = ChampionAnalyzer.recomputeMatrixCoalesced(missing, pendingBuilds, job);
         invalidateTierLists(missing);

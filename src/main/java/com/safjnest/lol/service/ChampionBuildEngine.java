@@ -1,7 +1,7 @@
 package com.safjnest.lol.service;
 
 import com.safjnest.lol.champion.ChampionBuildData;
-import com.safjnest.lol.model.Build;
+import com.safjnest.lol.model.ChampionBuildSnapshot;
 import com.safjnest.lol.model.Filter;
 
 final class ChampionBuildEngine {
@@ -25,12 +25,8 @@ final class ChampionBuildEngine {
         cores.accept(game);
     }
 
-    Build finish() {
-        return cores.aggregate(filter);
-    }
-
-    BuildCoreStats.Variants finishVariants() {
-        return cores.variants(filter);
+    ChampionBuildSnapshot finish() {
+        return cores.snapshot(filter);
     }
 
     void clear() {

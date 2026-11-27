@@ -58,6 +58,7 @@ import com.safjnest.database.sql.QueryRecord;
 import com.safjnest.database.sql.QueryRecordParser;
 import com.safjnest.lol.utils.ItemUtils;
 import com.safjnest.lol.model.Build;
+import com.safjnest.lol.model.ChampionBuildSnapshot;
 import com.safjnest.lol.model.statistics.ChampionStatsDocument;
 import com.safjnest.lol.model.statistics.shared.ChampionStatsScope;
 import com.safjnest.lol.model.ArenaBuildData;
@@ -119,7 +120,8 @@ public final class MongoDB {
     private static final Logger CHAMPION_INPUT_LOG = LoggerFactory.getLogger("ChampionInput");
     private static final int CHAMPION_MATCH_BATCH_SIZE = 1_000;
     private static final int CHAMPION_EVENT_BATCH_SIZE = 200;
-    private static final int CHAMPION_BUILD_GENERATION_VERSION = 3;
+    private static final int CHAMPION_BUILD_AGGREGATE_VERSION = 3;
+    private static final int CHAMPION_BUILD_SNAPSHOT_VERSION = 1;
     private static final int CHAMPION_BUILD_MAX_BSON_BYTES = 16 * 1024 * 1024 - 256 * 1024;
     private static final List<String> CHAMPION_STANDARD_BUILD_FIELDS = List.of(
             "filter", "games", "wins", "winrate", "coreBuilds", "coreItems", "starters", "boots",
@@ -1712,7 +1714,7 @@ public final class MongoDB {
     }
 
     public static Build findChampionBuild(Filter filter) {
-        Document document = championBuildDocument(filter, null);
+        Document document = championBuildDocument(filter, Projections.exclude("buildSnapshot"));
         if (document == null)
             return null;
         championBuildUpdatedAt(filter, document);
@@ -1723,15 +1725,17 @@ public final class MongoDB {
                     return Build.fromArena(filter, arena);
             }
         } else {
-            Build build = readBuild(document);
-            if (build != null && build.coreBuilds() != null && build.coreItems() != null
-                    && build.starterOptions() != null && build.bootOptions() != null
-                    && build.supportItemOptions() != null && build.itemSlots() != null
-                    && build.runeOptions() != null && build.summonerSpellOptions() != null
-                    && build.skillOrders() != null && build.prismaticOptions() != null
-                    && build.augmentOptions() != null) return build;
+            return readStandardChampionBuild(filter, document);
         }
         throw invalidChampionAggregate("build", filter.toKey(), "Invalid build payload");
+    }
+
+    public static ChampionBuildSnapshot findChampionBuildSnapshot(Filter filter) {
+        if (filter.queue() == GameQueueType.CHERRY) {
+            return null;
+        }
+        Document document = championBuildDocument(filter, null);
+        return readChampionBuildSnapshot(filter, document);
     }
 
     private static Document championBuildDocument(Filter filter, Bson projection) {
@@ -1748,9 +1752,9 @@ public final class MongoDB {
 
     private static long championBuildUpdatedAt(Filter filter, Document document) {
         boolean arena = filter.queue() == GameQueueType.CHERRY;
-        if (!arena && number(document, "buildVersion") != CHAMPION_BUILD_GENERATION_VERSION)
+        if (!arena && number(document, "buildVersion") != CHAMPION_BUILD_AGGREGATE_VERSION)
             throw invalidChampionAggregate("build", filter.toKey(), "Stored build version "
-                + number(document, "buildVersion") + ", expected " + CHAMPION_BUILD_GENERATION_VERSION);
+                + number(document, "buildVersion") + ", expected " + CHAMPION_BUILD_AGGREGATE_VERSION);
         long updatedAt = number(document, arena ? "arenaLastUpdate" : "lastUpdate");
         if (updatedAt <= 0)
             throw invalidChampionAggregate("build", filter.toKey(), "Missing build update timestamp");
@@ -1775,6 +1779,18 @@ public final class MongoDB {
     public static long findChampionBuildLastUpdate(Filter filter) {
         Document document = championBuildDocument(filter, Projections.include("buildVersion", "lastUpdate", "arenaLastUpdate"));
         return document == null ? 0 : championBuildUpdatedAt(filter, document);
+    }
+
+    public static long findChampionBuildSnapshotLastUpdate(Filter filter) {
+        if (filter.queue() == GameQueueType.CHERRY) {
+            return findChampionBuildLastUpdate(filter);
+        }
+        Document document = championBuildDocument(filter, Projections.include("buildVersion", "lastUpdate",
+            "buildSnapshot.version", "buildSnapshot.updatedAt"));
+        if (document == null || currentChampionBuildSnapshot(document) == null) {
+            return 0;
+        }
+        return championBuildUpdatedAt(filter, document);
     }
 
     public static List<GameQueueType> findChampionQueues(String patch) {
@@ -2947,10 +2963,13 @@ public final class MongoDB {
         return deleteProfileStatistics(puuid, Filter.summoner(seasonStart, 0));
     }
 
-    public static boolean upsertChampionBuild(Build build) {
-        if (build == null || build.filter() == null) return false;
-        Document update = standardBuildUpdate(build);
-        UpdateResult result = builds().updateOne(Filters.eq("_id", build.filter().toKey()), update,
+    public static boolean upsertChampionBuild(ChampionBuildSnapshot snapshot) {
+        if (snapshot == null || snapshot.aggregate().filter() == null) {
+            return false;
+        }
+        String key = snapshot.aggregate().filter().toKey();
+        Document update = standardBuildUpdate(snapshot);
+        UpdateResult result = builds().updateOne(Filters.eq("_id", key), update,
             new UpdateOptions().upsert(true));
         if (!result.wasAcknowledged()) throw new IllegalStateException("Champion build update was not acknowledged");
         return true;
@@ -4074,18 +4093,87 @@ public final class MongoDB {
         return Updates.combine(updates);
     }
 
-    private static Document standardBuildUpdate(Build build) {
+    static Document standardBuildUpdate(ChampionBuildSnapshot snapshot) {
+        Build build = snapshot.aggregate();
         if (build.arena() != null) throw new IllegalArgumentException("Arena requires its dedicated build.arena write path");
+        long updatedAt = System.currentTimeMillis();
         Document payload = JsonCodec.toDocument(build);
+        List<Document> variants = new ArrayList<>(snapshot.builds().size());
+        for (Build variant : snapshot.builds()) {
+            variants.add(JsonCodec.toDocument(variant));
+        }
+        Document ranked = new Document("version", CHAMPION_BUILD_SNAPSHOT_VERSION)
+            .append("updatedAt", updatedAt)
+            .append("builds", variants)
+            .append("defaultBuildId", snapshot.defaultBuildId())
+            .append("bestAdjustedWinrateBuildId", snapshot.bestAdjustedWinrateBuildId());
         Document fields = new Document("games", build.games())
-                .append("winrate", build.winrate())
-                .append("buildVersion", CHAMPION_BUILD_GENERATION_VERSION)
-                .append("lastUpdate", System.currentTimeMillis());
+            .append("winrate", build.winrate())
+            .append("buildVersion", CHAMPION_BUILD_AGGREGATE_VERSION)
+            .append("lastUpdate", updatedAt)
+            .append("buildSnapshot", ranked);
         for (String field : CHAMPION_STANDARD_BUILD_FIELDS) fields.put("build." + field, payload.get(field));
         Document update = new Document("$set", fields)
             .append("$setOnInsert", new Document("filterKey", build.filter().toKey()));
         requireChampionBuildSize(update);
         return update;
+    }
+
+    static ChampionBuildSnapshot readChampionBuildSnapshot(Filter filter, Document document) {
+        if (document == null) {
+            return null;
+        }
+        Document ranked = currentChampionBuildSnapshot(document);
+        if (ranked == null) {
+            return null;
+        }
+        championBuildUpdatedAt(filter, document);
+        String key = filter.toKey();
+        Build aggregate = readStandardChampionBuild(filter, document);
+        if (!(ranked.get("builds") instanceof List<?> rows)) {
+            throw invalidChampionAggregate("build", key, "Missing build variants");
+        }
+        List<Build> variants = new ArrayList<>(rows.size());
+        for (Object row : rows) {
+            Build variant = readStructured(row, Build.class);
+            if (!isStandardChampionBuild(variant) || variant.filter() == null
+                    || variant.filter().rankBehavior() == null || !key.equals(variant.filter().toKey())) {
+                throw invalidChampionAggregate("build", key, "Invalid build variant payload");
+            }
+            variants.add(variant);
+        }
+        try {
+            return new ChampionBuildSnapshot(aggregate, variants, ranked.getString("defaultBuildId"),
+                ranked.getString("bestAdjustedWinrateBuildId"));
+        } catch (IllegalArgumentException | ClassCastException | NullPointerException failure) {
+            throw invalidChampionAggregate("build", key, "Invalid build variant selection");
+        }
+    }
+
+    private static Document currentChampionBuildSnapshot(Document document) {
+        // A legacy writer can update the aggregate after a rollback while leaving the ranked section in place.
+        if (document.get("buildSnapshot") instanceof Document ranked
+                && number(ranked, "version") == CHAMPION_BUILD_SNAPSHOT_VERSION
+                && number(ranked, "updatedAt") == number(document, "lastUpdate")) {
+            return ranked;
+        }
+        return null;
+    }
+
+    static Build readStandardChampionBuild(Filter filter, Document document) {
+        Build build = readBuild(document);
+        if (!isStandardChampionBuild(build)) {
+            throw invalidChampionAggregate("build", filter.toKey(), "Invalid build payload");
+        }
+        return build;
+    }
+
+    private static boolean isStandardChampionBuild(Build build) {
+        return build != null && build.coreBuilds() != null && build.coreItems() != null
+            && build.starterOptions() != null && build.bootOptions() != null
+            && build.supportItemOptions() != null && build.itemSlots() != null
+            && build.runeOptions() != null && build.summonerSpellOptions() != null
+            && build.skillOrders() != null && build.prismaticOptions() != null && build.augmentOptions() != null;
     }
 
     private static void requireArenaBuildFilter(Filter filter) {

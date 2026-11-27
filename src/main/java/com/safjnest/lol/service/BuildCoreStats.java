@@ -4,6 +4,7 @@ import com.safjnest.lol.champion.BuildSignature;
 import com.safjnest.lol.champion.ChampionBuildData;
 import com.safjnest.lol.champion.RuneSignature;
 import com.safjnest.lol.model.Build;
+import com.safjnest.lol.model.ChampionBuildSnapshot;
 import com.safjnest.lol.model.Filter;
 import com.safjnest.lol.utils.BuildUtils;
 
@@ -48,8 +49,6 @@ final class BuildCoreStats {
     private final List<List<Integer>> spellPairs = new ArrayList<>();
     private int games;
     private int wins;
-
-    record Variants(List<Build> builds, String defaultBuildId, String bestAdjustedWinrateBuildId) {}
 
     void accept(ChampionBuildData.Game game) {
         BuildSignature signature = game.signature();
@@ -125,28 +124,19 @@ final class BuildCoreStats {
         core.skills.accept(signature.spellOrder(), game.skillUpgrades(), game.win());
     }
 
-    Build aggregate(Filter filter) {
-        Options totals = new Options();
-        List<Build.CoreBuildOption> coreOptions = new ArrayList<>(cores.size());
-        for (int index = 0; index < cores.size(); index++) {
-            Options core = cores.get(index);
-            totals.merge(core);
-            coreOptions.add(coreOption(index));
-        }
-        coreOptions.sort(Comparator.comparingInt(Build.CoreBuildOption::matches).reversed()
-            .thenComparing(Build.CoreBuildOption::id));
-        return toBuild(filter, totals, games, wins, coreOptions, false);
-    }
-
-    Variants variants(Filter filter) {
+    ChampionBuildSnapshot snapshot(Filter filter) {
         int count = cores.size();
+        Options totals = new Options();
+        List<Build.CoreBuildOption> coreOptions = new ArrayList<>(count);
         int[] coreMatches = new int[count];
         int[] coreWins = new int[count];
         for (int index = 0; index < count; index++) {
             Options core = cores.get(index);
-            int row = core.firstRow[COMPLETION];
-            coreMatches[index] = core.matches.getInt(row);
-            coreWins[index] = core.wins.getInt(row);
+            Build.CoreBuildOption option = coreOption(index);
+            coreOptions.add(option);
+            coreMatches[index] = option.matches();
+            coreWins[index] = option.wins();
+            totals.merge(core);
         }
 
         boolean rankWinrate = filter.queue() != GameQueueType.CHERRY;
@@ -159,7 +149,7 @@ final class BuildCoreStats {
         for (int position = 0; position < indices.size(); position++) {
             int index = indices.getInt(position);
             Options core = cores.get(index);
-            Build.CoreBuildOption option = coreOption(index);
+            Build.CoreBuildOption option = coreOptions.get(index);
             if (position == 0) {
                 defaultBuildId = option.id();
             }
@@ -168,7 +158,10 @@ final class BuildCoreStats {
             }
             builds.add(toBuild(filter, core, option.matches(), option.wins(), List.of(option), true));
         }
-        return new Variants(List.copyOf(builds), defaultBuildId, bestAdjustedWinrateBuildId);
+        coreOptions.sort(Comparator.comparingInt(Build.CoreBuildOption::matches).reversed()
+            .thenComparing(Build.CoreBuildOption::id));
+        Build aggregate = toBuild(filter, totals, games, wins, coreOptions, false);
+        return new ChampionBuildSnapshot(aggregate, builds, defaultBuildId, bestAdjustedWinrateBuildId);
     }
 
     void clear() {
