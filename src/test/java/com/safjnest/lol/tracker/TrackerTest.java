@@ -1,15 +1,61 @@
 package com.safjnest.lol.tracker;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
+
+import java.util.List;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
 import org.junit.Test;
 
 import com.safjnest.lol.model.match.RankProgress;
+import com.safjnest.lol.utils.ChampionBuildTimelineUtils;
+import com.safjnest.lol.utils.ChampionBuildTimelineUtils.SkillUpgrade;
 import com.safjnest.lol.utils.RankProgressUtils;
+import com.safjnest.utils.JsonCodec;
 
 import no.stelar7.api.r4j.basic.constants.types.lol.GameQueueType;
 import no.stelar7.api.r4j.basic.constants.types.lol.TierDivisionType;
+import no.stelar7.api.r4j.pojo.lol.match.v5.LOLTimeline;
 
 public class TrackerTest {
+
+    @Test
+    public void rebuildKeepsEvolutionEventsOutOfSkillOrdersAndRetainsUltimateRanks() {
+        List<Integer> order = List.of(1, 2, 3, 1, 1, 4, 1, 3, 1, 3, 4, 3, 3, 2, 2, 4, 2, 2);
+        JSONArray events = new JSONArray();
+        for (int level = 1; level <= order.size(); level++) {
+            int timestamp = level * 10_000;
+            if (level > 1) {
+                events.put(new JSONObject().put("type", "LEVEL_UP").put("participantId", 1)
+                    .put("timestamp", timestamp).put("level", level));
+            }
+            events.put(new JSONObject().put("type", "SKILL_LEVEL_UP").put("participantId", 1)
+                .put("timestamp", timestamp + 100).put("skillSlot", order.get(level - 1)).put("levelUpType", "NORMAL"));
+            if (level == 11) {
+                events.put(new JSONObject().put("type", "SKILL_LEVEL_UP").put("participantId", 1)
+                    .put("timestamp", timestamp + 500).put("skillSlot", 1).put("levelUpType", "EVOLVE"));
+            }
+        }
+        JSONObject raw = new JSONObject().put("participants", new JSONArray()
+            .put(new JSONObject().put("participantId", 1).put("puuid", "kaisa")))
+            .put("frames", new JSONArray().put(new JSONObject().put("timestamp", 180_500).put("events", events)));
+        LOLTimeline timeline = JsonCodec.fromJson(raw.toString(), LOLTimeline.class);
+        assertNotNull(timeline);
+
+        Tracker.RebuiltTimeline rebuilt = Tracker.rebuildTimeline(timeline);
+        assertNotNull(rebuilt);
+        assertEquals(order, rebuilt.skillOrders().get("kaisa"));
+        JSONArray skills = new JSONObject(rebuilt.events()).getJSONArray("skill_events");
+        assertEquals(19, skills.length());
+        assertEquals("EVOLVE", skills.getJSONObject(11).getString("level_up_type"));
+
+        List<SkillUpgrade> upgrades = ChampionBuildTimelineUtils.skillUpgrades(rebuilt.events(), "kaisa");
+        assertEquals(order, ChampionBuildTimelineUtils.skillOrder(List.of(), upgrades));
+        assertEquals(List.of(6, 11, 16), upgrades.stream().filter(upgrade -> upgrade.skillSlot() == 4)
+            .map(SkillUpgrade::championLevel).toList());
+    }
 
     @Test
     public void missingPreviousMatchKeepsGainAtZero() {

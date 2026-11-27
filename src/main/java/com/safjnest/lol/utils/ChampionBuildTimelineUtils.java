@@ -74,7 +74,8 @@ public final class ChampionBuildTimelineUtils {
         List<SkillUpgrade> result = new ArrayList<>();
         for (int i = 0; i < skills.length(); i++) {
             JSONObject skill = skills.optJSONObject(i);
-            if (skill == null || !puuid.equals(resolve(skill.opt("participant"), refs))) continue;
+            if (skill == null || "EVOLVE".equals(skill.optString("level_up_type"))
+                    || !puuid.equals(resolve(skill.opt("participant"), refs))) continue;
             long timestamp = skill.optLong("timestamp", -1);
             int slot = skill.optInt("skill_slot", 0);
             if (timestamp < 0 || slot < 1 || slot > 4) continue;

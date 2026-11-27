@@ -31,6 +31,7 @@ import com.safjnest.lol.queue.job.Job;
 import com.safjnest.lol.queue.job.JobPriority;
 import com.safjnest.lol.queue.scheduler.RiotScheduler;
 import com.safjnest.lol.queue.scheduler.SyncScheduler;
+import com.safjnest.lol.tracker.Tracker;
 import com.safjnest.lol.utils.LeagueShardUtils;
 import com.safjnest.lol.utils.GameQueueTypeUtils;
 import com.safjnest.lol.utils.MatchUtils;
@@ -235,6 +236,24 @@ public final class MatchService {
     public static void clearTimelineCache(LOLMatch match) {
         if (match == null || match.getPlatform() == null) return;
         clearTimelineCache(MatchUtils.fullGameId(match), match.getPlatform());
+    }
+
+    public static boolean repairTimeline(String gameId, LeagueShard shard, LOLTimeline timeline) {
+        if (!valid(gameId, shard)) {
+            return false;
+        }
+        Tracker.RebuiltTimeline rebuilt = Tracker.rebuildTimeline(timeline);
+        if (rebuilt == null) {
+            return false;
+        }
+        if (!MongoDB.updateMatchSkillOrders(gameId, rebuilt.skillOrders())) {
+            return false;
+        }
+        try {
+            return MongoDB.updateMatchEvents(gameId, rebuilt.events());
+        } finally {
+            invalidate(gameId, shard);
+        }
     }
 
     public static void clearTimelineCache(String gameId, LeagueShard shard) {

@@ -14,6 +14,7 @@ import com.safjnest.lol.model.Filter;
 import com.safjnest.lol.model.match.MatchFacetQuery;
 import com.safjnest.lol.model.statistics.ProfileMatchups;
 import com.safjnest.lol.queue.QueueHandler;
+import com.safjnest.lol.queue.job.JobPriority;
 import com.safjnest.lol.queue.scheduler.ComputeScheduler;
 import com.safjnest.lol.queue.scheduler.DatabaseWorkerType;
 import com.safjnest.lol.queue.scheduler.RiotScheduler;
@@ -27,7 +28,6 @@ import com.safjnest.lol.service.MatchService;
 import com.safjnest.lol.service.ProfileRecordService;
 import com.safjnest.lol.service.ProfileService;
 import com.safjnest.lol.service.SummonerService;
-import com.safjnest.lol.tracker.Tracker;
 import com.safjnest.lol.tracker.TrackerScheduler;
 import com.safjnest.lol.utils.LeagueShardUtils;
 import com.safjnest.lol.utils.MatchMemoryUtils;
@@ -53,6 +53,7 @@ public class Test extends Command {
     private static final int TIMELINE_NULL_STOP_THRESHOLD = 10;
     private static final long TIMELINE_REQUEST_DELAY_MILLIS = 400L;
     private static final long PATCH_TIMELINE_REQUEST_DELAY_MILLIS = 500L;
+    private static final List<Integer> EVOLUTION_CHAMPIONS = List.of(145, 121, 112); // Kai'Sa, Kha'Zix, Viktor
     private static final List<String> REGENERATION_OPERATIONS = List.of(
         "profiles", "competitive", "aggregates", "records", "mastery-records", "champions", "indexables", "all"
     );
@@ -86,7 +87,7 @@ public class Test extends Command {
                 + " | retrieveallgames <summoner> | retrieveallgamesfast <summoner> | getrank | getallrank | highstats"
                 + " | audit <" + String.join("|", AUDIT_OPERATIONS) + "> | migrate [" + String.join(" | ", MIGRATION_OPERATIONS)
                 + "] | regenerate aggregates [all|" + String.join("|", AggregateService.types())
-                + "] | regenerate champion [patch] | export-match-search | fix-timeline <puuid> | fix-timeline-patch <patch> | test-matchups <puuid> <shard>");
+                + "] | regenerate champion [patch] | export-match-search | fix-timeline <puuid> | fix-timeline-patch <patch> [evolve] | test-matchups <puuid> <shard>");
             case "gc" -> {
                 System.gc();
                 event.reply("Garbage collection requested.");
@@ -133,7 +134,7 @@ public class Test extends Command {
             case "export-match-search" -> startMatchSearchExport(event);
             default -> event.reply("Usage: !test regenerate <"
                 + String.join("|", REGENERATION_OPERATIONS) + "> | !test migrate [" + String.join("|", MIGRATION_OPERATIONS)
-                + "] | !test fix-timeline <puuid> | !test fix-timeline-patch <patch>"
+                + "] | !test fix-timeline <puuid> | !test fix-timeline-patch <patch> [evolve]"
                 + " | !test test-matchups <puuid> <shard> | !test export-match-search.");
         }
     }
@@ -310,13 +311,11 @@ public class Test extends Command {
                             return !stop;
                         }
                         missingTimelineStreak[0] = 0;
-                        Map<String, Object> refreshedEvents = Tracker.rebuildTimelineEvents(timeline);
-                        if (refreshedEvents == null || refreshedEvents.isEmpty()) {
+                        if (!MatchService.repairTimeline(gameId, match.leagueShard, timeline)) {
                             counts[2]++;
                             job.failed(itemId);
                             return true;
                         }
-                        MongoDB.updateMatchEvents(gameId, refreshedEvents);
                         counts[0]++;
                         job.done(itemId);
                     } catch (Exception exception) {
@@ -343,32 +342,39 @@ public class Test extends Command {
     }
 
     private static void queueTimelinePatchRepair(CommandEvent event, String[] arguments) {
-        if (arguments.length < 2 || !arguments[1].trim().matches("\\d+\\.\\d+")) {
-            event.reply("Usage: !test fix-timeline-patch <patch> (example: 16.19).");
+        String[] options = arguments.length < 2 ? new String[0] : arguments[1].trim().split("\\s+", 2);
+        if (options.length == 0 || !options[0].matches("\\d+\\.\\d+")
+                || (options.length == 2 && !"evolve".equalsIgnoreCase(options[1]))) {
+            event.reply("Usage: !test fix-timeline-patch <patch> [evolve] (example: 16.26 evolve).");
             return;
         }
-        String patch = arguments[1].trim();
-        List<LeagueShard> shards = MongoDB.findTimelineRegionsByPatch(patch);
+        String patch = options[0];
+        List<Integer> champions = options.length == 2 ? EVOLUTION_CHAMPIONS : List.of();
+        List<LeagueShard> shards = MongoDB.findTimelineRegionsByPatch(patch, champions);
         if (shards.isEmpty()) {
             event.reply("No stored matches found for patch " + patch + ".");
             return;
         }
-        for (LeagueShard shard : shards) queueTimelinePatchRepair(patch, shard);
-        event.reply("Timeline repair queued for patch " + patch + " across " + shards.size() + " regions.");
+        for (LeagueShard shard : shards) {
+            queueTimelinePatchRepair(patch, shard, champions);
+        }
+        String scope = champions.isEmpty() ? "" : " (Kai'Sa, Kha'Zix, Viktor)";
+        event.reply("Timeline repair queued for patch " + patch + scope + " across " + shards.size() + " regions.");
     }
 
-    private static void queueTimelinePatchRepair(String patch, LeagueShard shard) {
+    private static void queueTimelinePatchRepair(String patch, LeagueShard shard, List<Integer> champions) {
+        String scope = champions.isEmpty() ? "all" : "evolve";
         QueueHandler.background(SyncScheduler.class, shard,
-            "owner-fix-timeline-patch:" + patch + ":" + shard.name(),
-            "owner fix timeline patch=" + patch + " region=" + shard.name(), job -> {
-                long total = MongoDB.countMatchesByPatch(patch, shard);
+            "owner-fix-timeline-patch:" + patch + ":" + shard.name() + ":" + scope,
+            "owner fix timeline patch=" + patch + " region=" + shard.name() + " scope=" + scope, job -> {
+                long total = MongoDB.countMatchesByPatch(patch, shard, champions);
                 int progressTotal = (int) Math.min(Integer.MAX_VALUE, total);
                 int[] counts = new int[3];
                 int[] step = {0};
                 System.out.println("[Fix timelines] region=" + shard.name() + " total=" + total);
                 job.setProgressTotal(progressTotal);
                 job.phase("TIMELINES");
-                MongoDB.forEachTimelineMatchByPatch(patch, shard, gameId -> {
+                MongoDB.forEachTimelineMatchByPatch(patch, shard, champions, gameId -> {
                     int current = ++step[0];
                     String itemId = gameId == null || gameId.isBlank() ? "missing-game-id:" + current : gameId;
                     job.trackItem(itemId);
@@ -383,19 +389,17 @@ public class Test extends Command {
 
                     LOLTimeline timeline = null;
                     try {
-                        timeline = MatchService.getTimeline(gameId, shard);
+                        timeline = MatchService.getTimeline(gameId, shard, JobPriority.BACKGROUND);
                         if (timeline == null) {
                             counts[1]++;
                             job.missing(itemId);
                             return;
                         }
-                        Map<String, Object> refreshedEvents = Tracker.rebuildTimelineEvents(timeline);
-                        if (refreshedEvents == null || refreshedEvents.isEmpty()) {
+                        if (!MatchService.repairTimeline(gameId, shard, timeline)) {
                             counts[2]++;
                             job.failed(itemId);
                             return;
                         }
-                        MongoDB.updateMatchEvents(gameId, refreshedEvents);
                         counts[0]++;
                         job.done(itemId);
                     } catch (Exception exception) {

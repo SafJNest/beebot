@@ -356,7 +356,7 @@ are PUUIDs. It contains the groups available in storage:
 | `participants` | Participant ID to PUUID mapping. |
 | `champion_kills` | Killer, victim, assists, bounty, first blood/multikill information when available. |
 | `item_events` | Purchases, sales, destroys and undo with item/before/after IDs and timestamp. |
-| `skill_events`, `level_events` | Ability upgrades and champion level changes. |
+| `skill_events`, `level_events` | Ability changes and champion level changes. New or repaired skill events include `level_up_type` when Riot supplies it. `NORMAL` records a point spent and `EVOLVE` records an evolution. `participants[].skillOrder` contains points spent in chronological order. |
 | `monster_events`, `building_events` | Monsters, structures and their team/participant references. |
 | `ward_events`, `turret_plate_events` | Ward actions and turret plates. |
 | `objective_events`, `game_events` | Recorded objective and game events. |

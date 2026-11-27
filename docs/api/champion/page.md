@@ -318,7 +318,8 @@ present in the final inventory; intermediate pieces are
 excluded.
 
 Options in `skillOrders` are sequences at the maximum observed level: 18
-when available, otherwise the maximum available length. `matches` and
+when available, otherwise the maximum available length. Timeline events marked
+as `EVOLVE` are excluded. `matches` and
 `wins` include every game whose observed order is a prefix of the
 sequence, so games that ended before that level also contribute
 to the compatible combination.

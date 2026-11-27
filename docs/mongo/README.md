@@ -49,8 +49,9 @@ Owner-only migration and regeneration commands are implemented in
   public API payloads and command presentation remain unchanged.
 - `!test regenerate aggregates [type]` — queue separate count/distribution jobs;
   omit the type to rebuild all six aggregate families.
-- `!test fix-timeline <puuid>` or `!test fix-timeline-patch <patch>` — restore
-  missing timeline events from Riot.
+- `!test fix-timeline <puuid>` or `!test fix-timeline-patch <patch> [evolve]` —
+  rebuild `match_events` and `match.participants[].skillOrder` from Riot's
+  timeline. The `evolve` scope selects matches with Kai'Sa, Kha'Zix or Viktor.
 
 Mongo rank-history migrations use bounded batches and checkpoints; the facets
 rebuild uses idempotent upserts. Review the
