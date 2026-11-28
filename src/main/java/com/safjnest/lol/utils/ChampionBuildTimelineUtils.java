@@ -36,26 +36,29 @@ public final class ChampionBuildTimelineUtils {
             if (skill == null || !puuid.equals(resolve(skill.opt("participant"), refs))) {
                 continue;
             }
+            String type = skill.optString("level_up_type");
             long timestamp = skill.optLong("timestamp", -1);
             int slot = skill.optInt("skill_slot", 0);
             if (timestamp < 0 || slot < 1 || slot > MAX_SKILL_SLOT) {
                 continue;
             }
-            SkillUpgrade upgrade = new SkillUpgrade(slot, timestamp);
-            if ("EVOLVE".equals(skill.optString("level_up_type"))) {
+            if ("EVOLVE".equals(type)) {
                 if (evolutions == null) {
                     evolutions = new ArrayList<>(4);
                 }
-                evolutions.add(upgrade);
-            } else {
-                upgrades.add(upgrade);
+                evolutions.add(new SkillUpgrade(slot, timestamp));
+            } else if (type.isBlank() || "NORMAL".equals(type)) {
+                upgrades.add(new SkillUpgrade(slot, timestamp));
             }
         }
-        upgrades.sort(Comparator.comparingLong(SkillUpgrade::timestampMillis));
-        if (evolutions != null) {
-            evolutions.sort(Comparator.comparingLong(SkillUpgrade::timestampMillis));
+        if (upgrades.isEmpty() && evolutions == null) {
+            return EMPTY_SKILLS;
         }
-        return new SkillEvents(upgrades, evolutions == null ? List.of() : evolutions);
+
+        List<LevelEvent> levels = championLevels(events, refs, puuid);
+        List<SkillUpgrade> timedUpgrades = sortAndAttachLevels(upgrades, levels);
+        List<SkillUpgrade> timedEvolutions = evolutions == null ? List.of() : sortAndAttachLevels(evolutions, levels);
+        return new SkillEvents(timedUpgrades, timedEvolutions);
     }
 
     public static List<ItemEvent> itemEvents(Object rawEvents, String puuid) {
@@ -142,7 +145,56 @@ public final class ChampionBuildTimelineUtils {
         return refs == null ? key : refs.optString(key, null);
     }
 
-    public record SkillUpgrade(int skillSlot, long timestampMillis) {}
+    private static List<SkillUpgrade> sortAndAttachLevels(List<SkillUpgrade> skills, List<LevelEvent> levels) {
+        skills.sort(Comparator.comparingLong(SkillUpgrade::timestampMillis));
+        if (levels.isEmpty()) {
+            return skills;
+        }
+
+        int level = levels.getFirst().level() == 2 ? 1 : 0;
+        int next = 0;
+        for (int i = 0; i < skills.size(); i++) {
+            SkillUpgrade skill = skills.get(i);
+            while (next < levels.size() && levels.get(next).timestampMillis() <= skill.timestampMillis()) {
+                level = levels.get(next).level();
+                next++;
+            }
+            if (level > 0) {
+                skills.set(i, new SkillUpgrade(skill.skillSlot(), skill.timestampMillis(), level));
+            }
+        }
+        return skills;
+    }
+
+    private static List<LevelEvent> championLevels(JSONObject events, JSONObject refs, String puuid) {
+        JSONArray raw = array(events, "level_events");
+        if (raw == null) {
+            return List.of();
+        }
+
+        List<LevelEvent> levels = new ArrayList<>();
+        for (int i = 0; i < raw.length(); i++) {
+            JSONObject event = raw.optJSONObject(i);
+            if (event == null || !puuid.equals(resolve(event.opt("participant"), refs))) {
+                continue;
+            }
+            int level = event.optInt("level", 0);
+            long timestamp = event.optLong("timestamp", -1);
+            if (level > 0 && timestamp >= 0) {
+                levels.add(new LevelEvent(level, timestamp));
+            }
+        }
+        levels.sort(Comparator.comparingLong(LevelEvent::timestampMillis).thenComparingInt(LevelEvent::level));
+        return levels;
+    }
+
+    private record LevelEvent(int level, long timestampMillis) {}
+
+    public record SkillUpgrade(int skillSlot, long timestampMillis, int championLevel) {
+        public SkillUpgrade(int skillSlot, long timestampMillis) {
+            this(skillSlot, timestampMillis, 0);
+        }
+    }
 
     public record SkillEvents(List<SkillUpgrade> upgrades, List<SkillUpgrade> evolutions) {}
 

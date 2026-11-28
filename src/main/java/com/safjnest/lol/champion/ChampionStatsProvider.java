@@ -30,12 +30,16 @@ public final class ChampionStatsProvider {
         List<ChampionStatsData.RawParticipant> participants = new ArrayList<>();
         for (Document participant : participants(document.get("participants"))) {
             participants.add(new ChampionStatsData.RawParticipant(
-                    participant.getInteger("champion", 0), lane(participant), participant.getBoolean("win", false),
+                    participant.getInteger("champion", 0), lane(participant), win(participant),
                     team(participant), matchId, participant.getString("kda"), participant.getInteger("cs", 0),
                     participant.getInteger("goldEarned", 0), participant.getString("puuid"),
                     participant.getInteger("subTeam", 0), participant.getInteger("subTeamPlacement", 0)));
         }
         return new ChampionStatsData.RawMatch(matchId, metadata, participants);
+    }
+
+    public static boolean win(Document participant) {
+        return participant.getBoolean("win", false);
     }
 
     private static List<Document> participants(Object value) {

@@ -31,7 +31,7 @@ public final class MatchupRankingAnalyzer {
             return statistics;
         return new ChampionStatistics(statistics.filter(), statistics.overview(), statistics.laneStats(),
             rankChampionMatchups(statistics), rankChampionSynergies(statistics), statistics.powerCurve(), statistics.trend(),
-            statistics.synergies(), statistics.subteams(), statistics.subteamsById());
+            statistics.synergies(), statistics.subteams(), statistics.subteamsById(), statistics.allySynergies());
     }
 
     public static ProfileMatchups rank(ProfileMatchups profile) {

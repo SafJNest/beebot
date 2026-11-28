@@ -70,6 +70,11 @@ the optional fallback for instances without R2. See [R2 credentials](https://dev
 
 ## Database and deployment
 
+- Under `services.mongo`, set `uri`, `league_collection` and
+  `league_test_collection`. These names identify MongoDB databases.
+  `runtime.testing: true` selects `league_test_collection`. Production uses
+  `league_collection`. Move any existing scalar Mongo URI into `uri` and set
+  both database names before using League features.
 - For dashboard authentication, review the SQL files under [database/sql/auth/](../database/sql/auth/).
   A fresh installation starts with `001-dashboard-auth.sql`. For an existing
   auth catalog, check for the OAuth transaction table and typed API-key columns
@@ -102,13 +107,92 @@ Standard queues return `builds` at the top level with `defaultBuildId` and
 core in its build at `coreBuilds[0].id`. A completed snapshot with no eligible
 variants returns `200` with `builds: []`. Arena returns its dedicated `build` field.
 
-Each standard build returns at most one entry in `skillOrders`, with the most
-played sequence in `order`. Its `timedOrder` averages each ability rank over
-the timed games in the core and reports the sample count in `timedMatches`.
-In each timing, `level` is the
-one-based position in `order`. When the timeline contains typed evolution
-events, `skillEvolutions` reports the most played evolution sequence and its
-timings in the same format. `spell1` and `spell2` appear under `summonerSpells`.
+Labels are added to the finished snapshot during normal build refreshes.
+Standard queues, including ARAM, expose a short `name` such as `On-Hit` only
+when item styles distinguish the returned builds. Naming can consult the
+third item when enough games reach it. If there is no clear item style,
+distinct dominant keystones can name the variants and are exposed as
+`nameKeystoneId`.
+
+`MOST_POPULAR` marks the global default and, when names distinguish categories,
+the most played build in each category. `BEST_ADJUSTED_WINRATE` follows
+`bestAdjustedWinrateBuildId`. A homogeneous set can be displayed using its
+badges alone. The list order, core IDs, selection IDs, and build statistics are
+fixed before labeling.
+
+For standard builds, `runes[].configuration.statShards` lists the shards in
+Offense, Flex, Defense order. Regenerate existing build snapshots to update
+their shard order.
+
+Each standard build returns at most one entry in `skillOrders`. Each match votes
+for every observed prefix. The recommendation follows the most popular
+continuation at each step and ends when the chosen branch has no observed
+continuation. A skill event without a type counts as `NORMAL`. The participant's
+stored skill order contributes votes without timestamps when the timeline has
+no normal upgrades.
+
+With `timingMethod: PREFIX_AVERAGE_INTERVALS`, `averageUpgradeTimeSeconds` is
+the estimated elapsed time obtained by adding the mean interval between
+consecutive points. For the first point, the interval starts at match start.
+Each interval uses matches that follow the recommended prefix through that
+point. `timedMatches` counts those matches. `skill` is the one-based position
+in `order` and `abilitySlot` identifies the ability. `level` gives the most
+commonly observed champion level at the event among matches with that prefix.
+Multiple points can share the same champion level. The API omits `level` when
+the level-up events do not establish it. Older snapshots without `timingMethod`
+contain absolute sample averages.
+
+`skillEvolutions` uses the same fields and absolute averages over the longest
+timed prefix of the most played evolution sequence. For stored snapshots in the
+previous format, the API reads `level` as `skill` and `championLevel` as `level`.
+Regenerate those snapshots to populate evolution levels from timelines. `spell1`
+and `spell2` appear under `summonerSpells`.
+
+### Arena builds
+
+Arena returns `build.items` and `build.boots` for all picks of the champion in
+the selected scope. `coreBuilds[].items` identifies the core as boots followed
+by the first prismatic from the timeline or, as a fallback, from the final
+inventory. `coreBuilds[].name` uses the prismatic name and includes boots to
+distinguish duplicate names. If a catalog name is missing, its item ID is shown.
+The most played core carries the `MOST_POPULAR` badge. Each core exposes
+`boots`, `itemOptions`, `prismatics`, `augments`,
+`builds`, and `slots` for its own sample. `slots[0]` describes the first
+observed legendary acquisition. Inventory-only combinations appear in
+`builds` with `inventoryFallback: true`. Their item IDs are sorted and do
+not contribute to slot or timing statistics.
+
+Each item ID counts once per champion pick in the global or core item options.
+Global option and core pick rates divide by all Arena picks of the champion in
+the selected scope. Inside a core, the pick rates for options, combinations,
+augments, and slots divide by all picks of that core. Win rates divide by the
+row's matches and use the participant outcome shared with champion statistics.
+Average placement and first-place rate use that row's known placements and are
+`null` when none are available. Timings use observed events. Core completion
+requires timestamps for both boots and the first prismatic.
+
+`skillOrders` and `skillEvolutions` are available globally and inside each
+core when there are observations. As in the standard build, `skill` is the
+position in the sequence and `level` is the observed champion level.
+`stats.synergies` reports exact ally compositions. `stats.allySynergies`
+counts each distinct allied champion once per pick from those same compositions.
+Ally pick rates divide by `stats.overview.picks`.
+
+- `coverage.matches` counts distinct match IDs with a pick of the champion.
+  `build.games` counts the picks themselves, including repeated picks of that
+  champion in one match.
+- `coreGames` and `missingCoreGames` partition those picks by whether both core
+  items could be identified.
+- `firstPrismaticFallbackGames` counts all picks that needed the inventory to
+  identify a first prismatic, including picks without boots.
+- `buildTimelineGames` counts picks with at least one attributable item event.
+  `orderedItemGames` requires at least one observed legendary acquisition.
+- `coreGamesWithOrderedItems`, `coreGamesWithInventoryOnlyItems`, and
+  `coreGamesWithoutItems` partition `coreGames`. The first two groups contribute
+  one combination per pick. A pick in the third group had no recognized
+  legendary acquisition or final inventory item.
+
+Older Arena snapshots are recomputed on demand through the existing build job.
 
 The champion reader holds up to 2,000 match IDs per group and requests event
 cursor batches of up to 1,000 documents. Its logs report Mongo cursor time, event

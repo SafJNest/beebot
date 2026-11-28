@@ -16,11 +16,15 @@ public record RuneSignature(
         List<Integer> statShards
 ) {
 
-    static RuneSignature from(List<Integer> primary, List<Integer> secondary, List<Integer> shards) {
-        if (primary.size() < 2)
+    static RuneSignature from(List<Integer> primary, List<Integer> secondary, List<Integer> storedShards) {
+        if (primary.size() < 2) {
             return null;
+        }
+
+        // Match documents store Defense, Flex, Offense.
+        List<Integer> statShards = List.copyOf(storedShards.reversed());
         return new RuneSignature(primary.get(0), primary.get(1), sortedRunes(primary, 2),
-            secondary.isEmpty() ? 0 : secondary.get(0), sortedRunes(secondary, 1), List.copyOf(shards));
+            secondary.isEmpty() ? 0 : secondary.get(0), sortedRunes(secondary, 1), statShards);
     }
 
     private static List<Integer> sortedRunes(List<Integer> ids, int start) {

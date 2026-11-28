@@ -40,6 +40,7 @@ public class ChampionBuildEngineTest {
     public void reversedCoreKeepsItsOwnOptionsAndPurchaseTimes() throws Exception {
         Fixture fixture = xerath();
         JSONObject realTimeline = new JSONObject(fixture.timeline().toString());
+        JSONObject reversedTimeline = new JSONObject(realTimeline.toString());
         int participantId = fixture.participant().getInteger("id");
         realTimeline.getJSONArray("skill_events")
             .put(new JSONObject().put("participant", participantId).put("level_up_type", "EVOLVE")
@@ -50,7 +51,6 @@ public class ChampionBuildEngineTest {
         Document reversedParticipant = new Document(fixture.participant())
             .append("win", false).append("item1", 4628).append("item2", 6655).append("item4", 6657)
             .append("summonerSpell2", 14).append("primaryRunes", List.of(8200, 8214, 8226, 8210, 8237));
-        JSONObject reversedTimeline = new JSONObject(fixture.timeline().toString());
         JSONArray purchases = reversedTimeline.getJSONArray("item_events");
         for (int index = 0; index < purchases.length(); index++) {
             JSONObject event = purchases.getJSONObject(index);
@@ -131,17 +131,23 @@ public class ChampionBuildEngineTest {
         assertEquals(407, actual.summonerSpells().getFirst().itemId());
         assertEquals(8229, actual.runeOptions().getFirst().configuration().keystone());
         assertEquals(8214, reversed.runeOptions().getFirst().configuration().keystone());
+        assertEquals(List.of(5008, 5008, 5001), actual.getStatShards());
+        assertEquals(5008, actual.getOffense());
+        assertEquals(5008, actual.getFlex());
+        assertEquals(5001, actual.getDefense());
         Build.SkillOrderOption actualSkills = actual.skillOrders().getFirst();
         Build.SkillOrderOption reversedSkills = reversed.skillOrders().getFirst();
+        assertEquals(Build.TimingMethod.PREFIX_AVERAGE_INTERVALS, actualSkills.timingMethod());
+        assertNull(actual.skillEvolutions().timingMethod());
         assertEquals(actualSkills.order(), reversedSkills.order());
         assertEquals(17, actualSkills.timedOrder().size());
-        assertEquals(new Build.SkillTiming(1, 2, 30.37, samples), actualSkills.timedOrder().getFirst());
-        assertEquals(new Build.SkillTiming(1, 2, 40.37, samples), reversedSkills.timedOrder().getFirst());
+        assertEquals(new Build.SkillTiming(1, 1, 2, 30.37, samples), actualSkills.timedOrder().getFirst());
+        assertEquals(new Build.SkillTiming(1, 1, 2, 40.37, samples), reversedSkills.timedOrder().getFirst());
         assertEquals(List.of(1, 3), actual.skillEvolutions().order());
-        assertEquals(List.of(new Build.SkillTiming(1, 1, 720, samples), new Build.SkillTiming(2, 3, 1200, samples)),
+        assertEquals(List.of(new Build.SkillTiming(7, 1, 1, 720, samples), new Build.SkillTiming(10, 2, 3, 1200, samples)),
             actual.skillEvolutions().timedOrder());
         assertEquals(List.of(2), reversed.skillEvolutions().order());
-        assertEquals(List.of(new Build.SkillTiming(1, 2, 660, samples)), reversed.skillEvolutions().timedOrder());
+        assertEquals(List.of(new Build.SkillTiming(7, 1, 2, 660, samples)), reversed.skillEvolutions().timedOrder());
 
         engine.clear();
         ChampionBuildSnapshot empty = engine.finish();
@@ -151,12 +157,42 @@ public class ChampionBuildEngineTest {
     }
 
     @Test
+    public void untypedSkillEventsTakePriorityOverTheParticipantFallback() throws Exception {
+        Fixture fixture = xerath();
+        List<Integer> storedOrder = List.of(2, 1, 3);
+        Document participant = new Document(fixture.participant()).append("skillOrder", storedOrder);
+        Game legacy = fixture.parse(participant, fixture.timeline());
+        ChampionBuildEngine engine = new ChampionBuildEngine(fixture.filter());
+        int samples = 20;
+        for (int i = 0; i < samples; i++) {
+            engine.accept(legacy);
+        }
+
+        Build build = engine.finish().builds().getFirst();
+        assertEquals(samples, build.games());
+        Build.SkillOrderOption observed = build.skillOrders().getFirst();
+        assertEquals(17, observed.order().size());
+        assertEquals(new Build.SkillTiming(1, 1, 2, 30.37, samples), observed.timedOrder().getFirst());
+
+        JSONObject noSkillEvents = new JSONObject(fixture.timeline().toString()).put("skill_events", new JSONArray());
+        Game withoutSkillEvents = fixture.parse(participant, noSkillEvents);
+        engine.clear();
+        for (int i = 0; i < samples; i++) {
+            engine.accept(withoutSkillEvents);
+        }
+
+        Build.SkillOrderOption fallback = engine.finish().builds().getFirst().skillOrders().getFirst();
+        assertEquals(storedOrder, fallback.order());
+        assertTrue(fallback.timedOrder().isEmpty());
+    }
+
+    @Test
     public void representativeRuneUsesMostPlayedShardsWithinTheCore() throws Exception {
         Fixture fixture = xerath();
         Game sample = fixture.parse(fixture.participant(), fixture.timeline());
         RuneSignature original = sample.runes();
         RuneSignature alternative = new RuneSignature(original.primaryTree(), original.keystone(), original.primaryRunes(),
-            original.secondaryTree(), original.secondaryRunes(), List.of(5008, 5008, 5001));
+            original.secondaryTree(), original.secondaryRunes(), List.of(5008, 5008, 5011));
         Game common = new Game(sample.signature(), original, false,
             sample.roleBoundId(), sample.itemPurchaseTimesMillis(), sample.skills());
         Game rare = new Game(sample.signature(), alternative, true,
@@ -177,7 +213,7 @@ public class ChampionBuildEngineTest {
     }
 
     @Test
-    public void selectedSkillOrderUsesTimingSamplesByAbilityAndRankAcrossTheCore() {
+    public void selectedSkillOrderUsesCompatibleIntervalsAndStopsAtMissingTimestamps() {
         SkillOrder skillOrder = new SkillOrder();
         skillOrder.accept(List.of(), List.of(new SkillUpgrade(2, 30000), new SkillUpgrade(1, 130000),
             new SkillUpgrade(3, 190000), new SkillUpgrade(1, 244000)));
@@ -187,10 +223,31 @@ public class ChampionBuildEngineTest {
             new SkillUpgrade(3, 140000), new SkillUpgrade(1, 215000)));
         skillOrder.accept(List.of(2, 1, 0), List.of());
 
-        Build.SkillOrderOption selected = skillOrder.recommended();
+        Build.SkillOrderOption selected = skillOrder.recommended(SkillOrder.Selection.PREFIX);
         assertEquals(List.of(2, 1, 3, 1), selected.order());
-        assertEquals(List.of(new Build.SkillTiming(1, 2, 60, 3), new Build.SkillTiming(2, 1, 160, 3),
-            new Build.SkillTiming(3, 3, 165, 2), new Build.SkillTiming(4, 1, 250, 2)), selected.timedOrder());
+        assertEquals(Build.TimingMethod.PREFIX_AVERAGE_INTERVALS, selected.timingMethod());
+        assertEquals(List.of(new Build.SkillTiming(null, 1, 2, 60, 3), new Build.SkillTiming(null, 2, 1, 147.5, 2),
+            new Build.SkillTiming(null, 3, 3, 207.5, 1), new Build.SkillTiming(null, 4, 1, 261.5, 1)), selected.timedOrder());
+    }
+
+    @Test
+    public void fullSkillOrderUsesShorterGamesAsSupportForObservedContinuations() {
+        List<Integer> complete = List.of(1, 2, 3, 1, 1, 4, 1, 3, 1, 3, 4, 3, 3, 2, 2, 4, 2, 2);
+        List<Integer> shorter = complete.subList(0, 15);
+        List<Integer> alternate = List.of(1, 3, 2, 1, 1, 4, 1, 3, 1, 3, 4, 3, 3, 2, 2, 4, 2, 2);
+        SkillOrder orders = new SkillOrder();
+        for (int i = 0; i < 5; i++) {
+            orders.accept(shorter, List.of());
+        }
+        assertEquals(shorter, orders.recommended(SkillOrder.Selection.PREFIX).order());
+
+        orders.accept(alternate, List.of());
+        orders.accept(alternate, List.of());
+        assertEquals(shorter, orders.recommended(SkillOrder.Selection.PREFIX).order());
+
+        orders.accept(complete, List.of());
+        assertEquals(complete, orders.recommended(SkillOrder.Selection.PREFIX).order());
+        assertEquals(shorter, orders.recommended(SkillOrder.Selection.MOST_PLAYED).order());
     }
 
     private static void checkPurchase(Build.Option option, int item, double seconds, int samples) {

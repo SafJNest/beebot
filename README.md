@@ -61,7 +61,7 @@ java -jar target/beebot-10.0-jar-with-dependencies.jar
 | `api` | Configure the embedded HTTP server port and, when needed, Discord OAuth credentials and redirect URIs. |
 | `bot` | Define one or more named profiles with a Discord token, prefix, owner IDs, activity, color and playlist limits. `runtime.bot` must match a profile name. |
 | `services.database` | Configure the MariaDB host, database name, username and password. |
-| `services.mongo`, `services.riot` | Configure the MongoDB connection URI and Riot API key for LoL functionality. |
+| `services.mongo`, `services.riot` | Configure the MongoDB URI, League database names and Riot API key. |
 | `services.twitch`, `services.spotify`, `services.spotifyApi` | Configure Twitch and the separate Spotify playback and account-linking integrations. |
 | `services.lavalink` | Configure YouTube playback options, including PO token and rotor flags. |
 | `services.r2` | Configure optional R2 storage and CDN access for sounds. |

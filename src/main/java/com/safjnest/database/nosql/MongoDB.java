@@ -64,6 +64,7 @@ import com.safjnest.lol.model.statistics.shared.ChampionStatsScope;
 import com.safjnest.lol.model.ArenaBuildData;
 import com.safjnest.lol.model.ChampionIndexable;
 import com.safjnest.lol.model.ProfileIndexable;
+import com.safjnest.config.MongoSettings;
 import com.safjnest.config.Settings;
 import com.safjnest.lol.model.competitive.CompetitiveEntry;
 import com.safjnest.lol.model.Filter;
@@ -167,9 +168,6 @@ public final class MongoDB {
         return new CreateCollectionOptions().storageEngineOptions(new Document("wiredTiger", new Document("configString", COMPRESSED_STORAGE_ENGINE_CONFIG)));
     }
 
-    public static final String PRODUCTION_DATABASE = "beebot_test"; //cant rename mongo db...
-    public static final String TEST_DATABASE = "beebot_test";
-    private static final String MONGO_URI_ERROR = "Mongo URI is missing from settings.json";
     private static MongoClient client;
     private static MongoDatabase database;
     private static boolean collectionsReady;
@@ -179,7 +177,8 @@ public final class MongoDB {
 
     public static synchronized MongoDatabase getDatabase() {
         if (database == null) {
-            database = getClient().getDatabase(App.isTesting() ? TEST_DATABASE : PRODUCTION_DATABASE);
+            String name = getDatabaseName();
+            database = getClient().getDatabase(name);
         }
         if (!collectionsReady) {
             ensureCollections(database);
@@ -197,7 +196,11 @@ public final class MongoDB {
     }
 
     public static String getDatabaseName(boolean testing) {
-        return testing ? TEST_DATABASE : PRODUCTION_DATABASE;
+        MongoSettings mongo = Settings.get().services().getMongo();
+        if (mongo == null) {
+            throw new IllegalStateException("Missing services.mongo");
+        }
+        return mongo.databaseName(testing);
     }
 
     public static MongoDatabase database() {
@@ -206,8 +209,11 @@ public final class MongoDB {
 
     public static synchronized MongoClient getClient() {
         if (client == null) {
-            String uri = Settings.get().services().getMongo();
-            if (uri == null || uri.isBlank()) throw new IllegalStateException(MONGO_URI_ERROR);
+            MongoSettings mongo = Settings.get().services().getMongo();
+            String uri = mongo == null ? null : mongo.uri();
+            if (uri == null || uri.isBlank()) {
+                throw new IllegalStateException("Missing services.mongo.uri");
+            }
             ConnectionString connection = new ConnectionString(uri);
             if (connection.getDatabase() != null && !connection.getDatabase().isBlank()) {
                 throw new IllegalStateException("Mongo URI must not select an application database");
@@ -801,13 +807,6 @@ public final class MongoDB {
                     : Integer.compare(LaneTypeUtils.playableOrder(left.role()), LaneTypeUtils.playableOrder(right.role()));
         });
         return result;
-    }
-
-    public static Match championRawMatch(ChampionRawMatch raw) {
-        Match match = readMatch(QueryRecordParser.fromDocument(raw.document()));
-        match.events = raw.timeline();
-        match.eventData = null;
-        return match;
     }
 
     public static String getSummonerNameById(String puuid, LeagueShard shard) {
@@ -1734,7 +1733,8 @@ public final class MongoDB {
         String key = filter.toKey();
         if (filter.queue() == GameQueueType.CHERRY) {
             requireArenaBuildFilter(filter);
-            return builds().find(Filters.and(Filters.eq("_id", key), Filters.exists("build.arena")))
+            return builds().find(Filters.and(Filters.eq("_id", key),
+                    Filters.exists("build.arena.coverage.orderedItemGames")))
                 .projection(projection).first();
         }
         return builds().find(Filters.eq("_id", key)).projection(projection).first();

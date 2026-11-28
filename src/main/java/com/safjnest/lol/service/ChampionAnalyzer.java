@@ -8,13 +8,13 @@ import com.safjnest.lol.champion.ChampionBuildProvider;
 import com.safjnest.lol.queue.job.Job;
 import com.safjnest.lol.model.ChampionBuildSnapshot;
 import com.safjnest.lol.model.ChampionStatistics;
+import com.safjnest.lol.model.ChampionStatistics.ArenaAllySynergy;
 import com.safjnest.lol.model.ChampionStatistics.LaneSynergy;
 import com.safjnest.lol.model.ChampionStatistics.Overview;
 import com.safjnest.lol.model.ChampionStatistics.PowerCurvePoint;
 import com.safjnest.lol.model.ChampionStatistics.Trend;
 import com.safjnest.lol.model.Filter;
 import com.safjnest.lol.model.ArenaBuildData;
-import com.safjnest.lol.model.match.Match;
 import no.stelar7.api.r4j.basic.constants.types.lol.GameQueueType;
 import com.safjnest.lol.model.statistics.ChampionStatsDocument;
 import com.safjnest.lol.model.statistics.shared.ChampionLeafStats;
@@ -227,7 +227,37 @@ public final class ChampionAnalyzer {
             overview.winrate(), overview.pickrate(), overview.banrate(), overview.kda(), overview.csPerMinute(),
             overview.goldPerMinute(), overview.damageProfile(), averagePlacement, placements);
         return new ChampionStatistics(filter, arenaOverview, List.of(), Map.of(), List.of(), powerCurve, trend,
-            synergies, subteams, subteamsById);
+            synergies, subteams, subteamsById, arenaAllySynergies(synergies, overview.picks()));
+    }
+
+    static List<ArenaAllySynergy> arenaAllySynergies(List<ChampionStatistics.ArenaSynergy> synergies, int picks) {
+        if (synergies == null || synergies.isEmpty()) {
+            return List.of();
+        }
+        Int2ObjectOpenHashMap<long[]> counts = new Int2ObjectOpenHashMap<>();
+        for (ChampionStatistics.ArenaSynergy synergy : synergies) {
+            List<Integer> allies = synergy.allyChampions();
+            for (int index = 0; index < allies.size(); index++) {
+                Integer ally = allies.get(index);
+                if (allies.indexOf(ally) != index) {
+                    continue;
+                }
+                long[] count = counts.computeIfAbsent(ally.intValue(), ignored -> new long[2]);
+                count[0] += synergy.matches();
+                count[1] += synergy.wins();
+            }
+        }
+
+        List<ArenaAllySynergy> values = new ArrayList<>(counts.size());
+        for (var entry : counts.int2ObjectEntrySet()) {
+            long matches = entry.getValue()[0];
+            long wins = entry.getValue()[1];
+            values.add(new ArenaAllySynergy(entry.getIntKey(), matches, wins,
+                matches == 0 ? 0 : (double) wins / matches, picks == 0 ? 0 : (double) matches / picks));
+        }
+        values.sort(Comparator.comparingLong(ArenaAllySynergy::matches).reversed()
+            .thenComparingInt(ArenaAllySynergy::allyChampion));
+        return values;
     }
 
     static MatrixResult recomputeMatrixCoalesced(List<Filter> filters, List<Filter> buildFilters, Job<?> job) {
@@ -300,14 +330,10 @@ public final class ChampionAnalyzer {
                 if (!arenas.isEmpty()) {
                     if (job != null)
                         job.phase("PROCESS_BUILD");
-                    Match match = MongoDB.championRawMatch(input);
-                    try {
-                        for (var entry : arenas.entrySet())
-                            if (matchesMatrixFilter(arenaFilters.get(entry.getKey()), matchData))
-                                entry.getValue().accept(match);
-                    } finally {
-                        match.events = null; // The reader owns the shared timeline.
-                        MatchMemoryUtils.release(match);
+                    for (var entry : arenas.entrySet()) {
+                        if (matchesMatrixFilter(arenaFilters.get(entry.getKey()), matchData)) {
+                            entry.getValue().accept(input);
+                        }
                     }
                 }
                 if (job != null)
@@ -424,13 +450,15 @@ public final class ChampionAnalyzer {
             if (job != null && (!buildEngines.isEmpty() || !arenas.isEmpty())) {
                 job.phase("PUBLISH_BUILD");
             }
+            BuildNaming naming = new BuildNaming(buildProvider.loadedItems(), StaticDataService::getRuneName);
             for (ChampionBuildEngine engine : buildEngines.values()) {
                 ChampionBuildSnapshot snapshot = engine.finish();
-                MongoDB.upsertChampionBuild(snapshot);
+                MongoDB.upsertChampionBuild(naming.label(snapshot));
             }
             for (var entry : arenas.entrySet()) {
-                ArenaBuildData arena = entry.getValue().finish();
-                MongoDB.upsertChampionArena(arenaFilters.get(entry.getKey()), arena);
+                ArenaChampionAnalyzer.Accumulator accumulator = entry.getValue();
+                ArenaBuildData arena = accumulator.finish();
+                MongoDB.upsertChampionArena(arenaFilters.get(entry.getKey()), BuildNaming.labelArena(arena, accumulator.catalog()));
             }
             return new MatrixResult(scopes.size(), emptyScopes, persistedChampions);
         } finally {

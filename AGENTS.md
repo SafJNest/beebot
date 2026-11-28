@@ -27,7 +27,8 @@ in Claude Code and Gemini CLI.
 
 - Use explicit local types and imports. Use `var` only in a lambda if it improves readability. Use lowercase `instance` for singleton fields and `final` for immutable fields. Prefer static factories and stateless utilities. Use switch expressions with `->` and comma-separated cases, `List.of` or `Arrays.asList` for static lists, and a loop when it is clearer than a stream. Keep operational classes free of Lombok, new DI frameworks and `Optional` wrappers.
 - Preserve field and constructor groups, blank lines and ASCII banners. Apply the same spacing to new code. Separate guards, preparation, loading, transformation and return. Put the body of `if`, `else`, `for` and `while` on the next indented line, even for one statement. Keep related declarations together.
-- In services order constants, fields and constructors, public methods, one large separator and private methods. Reserve further comments for invariants and external behavior. In handlers get typed context first, make the cases visible and delegate actions to their owners. In analytics separate accumulation and cursor handling from response assembly.
+- At the top of each Java class, group static constants, nested types (records, enums and static classes), and instance fields. Follow with constructors, then the class's methods. Keep private helpers after the main methods. Reserve further comments for invariants and external behavior.
+- Keep behavior with its owner. Parsers interpret source formats, domain utilities hold reusable helpers, and aggregators compute results. In handlers get typed context first, make the cases visible and delegate actions to their owners. In analytics separate accumulation and cursor handling from response assembly. Prefer primitive structures and fewer allocations on hot paths when measurements support the change.
 
 ## Patterns to reuse
 

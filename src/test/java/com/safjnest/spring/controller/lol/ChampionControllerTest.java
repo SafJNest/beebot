@@ -3,7 +3,9 @@ package com.safjnest.spring.controller.lol;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 import org.junit.Test;
 import org.springframework.http.HttpStatus;
@@ -20,6 +22,7 @@ import com.safjnest.lol.model.ApiResult;
 import com.safjnest.lol.model.ArenaBuildData;
 import com.safjnest.lol.model.Build;
 import com.safjnest.lol.model.ChampionBuildSnapshot;
+import com.safjnest.lol.model.ChampionStatistics;
 import com.safjnest.lol.model.ChampionView;
 import com.safjnest.lol.model.Filter;
 import com.safjnest.lol.model.ResponseMetadata;
@@ -68,6 +71,8 @@ public class ChampionControllerTest {
     public void readyStandardPageSerializesAllVariantsAndSelectionIds() {
         Filter filter = Filter.championBuild(101, "16.22", GameQueueType.TEAM_BUILDER_RANKED_SOLO);
         Build popular = variant(filter, List.of(6655, 4628), 200, 0.51);
+        popular = Build.fromJson(new JSONObject(popular.toJson()).put("name", "AP")
+            .put("badges", List.of("MOST_POPULAR")).toString());
         Build highest = variant(filter, List.of(4628, 6655), 100, 0.60);
         ChampionBuildSnapshot snapshot = new ChampionBuildSnapshot(filter, List.of(popular, highest),
             "6655-4628", "4628-6655");
@@ -77,7 +82,10 @@ public class ChampionControllerTest {
 
         assertEquals(2, body.path("builds").size());
         assertEquals("6655-4628", body.at("/builds/0/coreBuilds/0/id").asText());
+        assertEquals("AP", body.at("/builds/0/name").asText());
+        assertEquals("MOST_POPULAR", body.at("/builds/0/badges/0").asText());
         assertEquals("4628-6655", body.at("/builds/1/coreBuilds/0/id").asText());
+        assertFalse(body.at("/builds/1").has("name"));
         assertEquals("6655-4628", body.path("defaultBuildId").asText());
         assertEquals("4628-6655", body.path("bestAdjustedWinrateBuildId").asText());
         assertFalse(body.has("build"));
@@ -93,6 +101,10 @@ public class ChampionControllerTest {
             List.of(), List.of(1, 3, 2, 1), null, 200, 0.51);
         JSONObject stored = new JSONObject(original.toJson());
         JSONObject order = stored.getJSONArray("skillOrders").getJSONObject(0).put("id", "1-3-2-1").put("matches", 50);
+        order.put("timedOrder", new JSONArray("""
+            [{"level":1,"abilitySlot":1,"averageUpgradeTimeSeconds":34.5,"timedMatches":5},
+             {"level":2,"championLevel":1,"abilitySlot":3,"averageUpgradeTimeSeconds":35,"timedMatches":3}]
+            """));
         stored.getJSONArray("skillOrders").put(new JSONObject(order.toString()).put("order", List.of(1, 2, 3, 1)));
         Build restored = Build.fromJson(stored.toString());
         assertNotNull(restored);
@@ -104,6 +116,16 @@ public class ChampionControllerTest {
         assertEquals(1, build.path("skillOrders").size());
         assertEquals(3, build.at("/skillOrders/0/order/1").asInt());
         assertEquals(2, build.at("/skillOrders/0").size());
+        JsonNode firstPoint = build.at("/skillOrders/0/timedOrder/0");
+        assertEquals(1, firstPoint.path("skill").asInt());
+        assertFalse(firstPoint.has("level"));
+        JsonNode secondPoint = build.at("/skillOrders/0/timedOrder/1");
+        assertEquals(2, secondPoint.path("skill").asInt());
+        assertEquals(1, secondPoint.path("level").asInt());
+        assertEquals(3, secondPoint.path("abilitySlot").asInt());
+        assertEquals(35d, secondPoint.path("averageUpgradeTimeSeconds").asDouble(), 0d);
+        assertEquals(3, secondPoint.path("timedMatches").asInt());
+        assertFalse(secondPoint.has("championLevel"));
         assertFalse(build.has("skillEvolutions"));
         JsonNode supportItem = build.at("/supportItems/0");
         assertEquals("3102", supportItem.path("id").asText());
@@ -131,15 +153,39 @@ public class ChampionControllerTest {
     @Test
     public void arenaKeepsItsDedicatedBuildPayload() {
         Filter filter = Filter.championBuild(101, "16.22", GameQueueType.CHERRY);
-        ArenaBuildData arena = new ArenaBuildData(20, 8, List.of(),
-            Collections.nCopies(ArenaBuildData.MAX_AUGMENTS, List.of()), List.of(), null);
-        ChampionView page = new ChampionView(new ChampionView.Champion(101, "Xerath", null), null, null,
+        ArenaBuildData.Option item = new ArenaBuildData.Option(223072, 5, 2, 0.25, 3.8, 0.2, 390d, 3L);
+        ArenaBuildData.Option boot = new ArenaBuildData.Option(223006, 4, 2, 0.2, 3d, 0.25, 140d, 4L);
+        Build.SkillOrderOption skill = new Build.SkillOrderOption(List.of(1),
+            List.of(new Build.SkillTiming(3, 1, 1, 5, 1)));
+        ArenaBuildData.Core core = new ArenaBuildData.Core("223006-446656", List.of(223006, 446656), 4, 2,
+            0.2, List.of(), Collections.nCopies(ArenaBuildData.MAX_AUGMENTS, List.of()), List.of(), 3d, 0.25,
+            List.of(item), List.of(), boot, null, null, List.of(skill), null,
+            "Everfrost", List.of(Build.Badge.MOST_POPULAR));
+        ArenaBuildData arena = new ArenaBuildData(20, 8, List.of(core),
+            Collections.nCopies(ArenaBuildData.MAX_AUGMENTS, List.of()), List.of(), null, null,
+            List.of(item), List.of(boot), 4.5, 0.1, List.of(skill), null);
+        ChampionStatistics.Overview overview = new ChampionStatistics.Overview(
+            100, 20, 0, 8, 0.4, 0.2, null, null, null, null, null);
+        ChampionStatistics stats = new ChampionStatistics(filter, overview, List.of(), Map.of(), List.of(),
+            List.of(), null, List.of(new ChampionStatistics.ArenaSynergy(List.of(35, 45), 3, 2, 2 / 3d)),
+            Map.of(), Map.of(), List.of(new ChampionStatistics.ArenaAllySynergy(35, 3, 2, 2 / 3d, 0.15),
+                new ChampionStatistics.ArenaAllySynergy(45, 3, 2, 2 / 3d, 0.15)));
+        ChampionView page = new ChampionView(new ChampionView.Champion(101, "Xerath", null), stats, null,
             Build.fromArena(filter, arena));
 
         JsonNode body = readyBody(page);
 
         assertEquals(20, body.at("/build/games").asInt());
-        assertFalse(body.path("build").has("skillOrders"));
+        assertEquals(8, body.at("/build/wins").asInt());
+        assertEquals(0.2, body.at("/build/items/0/firstPlaceRate").asDouble(), 0);
+        assertEquals(223006, body.at("/build/boots/0/id").asInt());
+        assertEquals("Everfrost", body.at("/build/coreBuilds/0/name").asText());
+        assertEquals("MOST_POPULAR", body.at("/build/coreBuilds/0/badges/0").asText());
+        assertEquals(3, body.at("/build/skillOrders/0/timedOrder/0/level").asInt());
+        assertEquals(1, body.at("/stats/synergies").size());
+        assertEquals(2, body.at("/stats/allySynergies").size());
+        assertEquals(35, body.at("/stats/allySynergies/0/allyChampion").asInt());
+        assertFalse(body.path("build").has("arena"));
         assertFalse(body.has("builds"));
     }
 

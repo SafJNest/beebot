@@ -18,7 +18,6 @@ import org.slf4j.LoggerFactory;
 import com.mongodb.MongoException;
 import com.safjnest.exception.Exception;
 import com.safjnest.lol.queue.scheduler.ComputeScheduler.ChampionWork;
-import com.safjnest.lol.utils.MatchMemoryUtils;
 
 import com.safjnest.database.nosql.MongoDB;
 import com.safjnest.database.redis.RedisClient;
@@ -26,8 +25,8 @@ import com.safjnest.database.redis.RedisKey;
 import com.safjnest.lol.arena.ArenaItemCatalog;
 import com.safjnest.lol.champion.ChampionBuildProvider;
 import com.safjnest.lol.model.ApiResult;
-import com.safjnest.lol.model.ArenaBuildData;
 import com.safjnest.lol.model.Build;
+import com.safjnest.lol.model.ArenaBuildData;
 import com.safjnest.lol.model.ChampionBuildSnapshot;
 import com.safjnest.lol.model.ChampionStatistics;
 import com.safjnest.lol.model.ChampionTierList;
@@ -36,7 +35,6 @@ import com.safjnest.lol.model.ChampionView;
 import com.safjnest.lol.model.Filter;
 import com.safjnest.lol.model.ChampionIndexable;
 import com.safjnest.lol.model.ResponseMetadata;
-import com.safjnest.lol.model.match.Match;
 import com.safjnest.lol.model.statistics.ChampionStatsDocument;
 import com.safjnest.lol.model.statistics.shared.ChampionLeafStats;
 import com.safjnest.lol.model.statistics.shared.ChampionNode;
@@ -204,15 +202,17 @@ public class ChampionService {
         }
 
         ChampionBuildEngine engine = new ChampionBuildEngine(snapshot);
+        ChampionBuildProvider provider = new ChampionBuildProvider(snapshot);
         boolean refreshed;
         try {
-            ChampionBuildProvider.forEachGame(snapshot, job, engine::accept);
+            provider.forEachGame(job, engine::accept);
             if (job != null) {
                 job.phase("PUBLISH_BUILD");
             }
 
             ChampionBuildSnapshot buildSnapshot = engine.finish();
-            refreshed = MongoDB.upsertChampionBuild(buildSnapshot);
+            BuildNaming naming = new BuildNaming(provider.loadedItems(), StaticDataService::getRuneName);
+            refreshed = MongoDB.upsertChampionBuild(naming.label(buildSnapshot));
         } finally {
             engine.clear();
         }
@@ -429,19 +429,16 @@ public class ChampionService {
             snapshot.champion(), snapshot.patch(), Objects.requireNonNull(catalog, "Patch catalog required"));
         try {
             MongoDB.forEachChampionRawMatchEventBatch(snapshot, true, job, input -> {
-                Match match = MongoDB.championRawMatch(input);
-                try {
-                    if (!accumulator.accept(match))
-                        throw new IllegalArgumentException("Arena match does not match the requested scope");
-                } finally {
-                    match.events = null; // The reader owns the shared timeline.
-                    MatchMemoryUtils.release(match);
+                if (!accumulator.accept(input)) {
+                    throw new IllegalArgumentException("Arena match does not match the requested scope");
                 }
             });
             if (job != null)
                 job.phase("PUBLISH_BUILD");
-            if (!MongoDB.upsertChampionArena(snapshot, accumulator.finish()))
+            ArenaBuildData arena = accumulator.finish();
+            if (!MongoDB.upsertChampionArena(snapshot, BuildNaming.labelArena(arena, catalog))) {
                 throw new IllegalStateException("Arena write was not completed");
+            }
             invalidate(snapshot);
             return true;
         } finally {

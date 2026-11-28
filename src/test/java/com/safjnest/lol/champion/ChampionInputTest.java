@@ -13,8 +13,7 @@ import com.safjnest.lol.arena.ArenaItemCatalog;
 import com.safjnest.lol.arena.ParsedArenaGame;
 import com.safjnest.lol.model.Build.Kind;
 import com.safjnest.lol.model.Filter;
-import com.safjnest.lol.model.match.Match;
-import com.safjnest.lol.model.match.Participant;
+import com.safjnest.lol.utils.ChampionBuildTimelineUtils.ItemEvent;
 import com.safjnest.lol.service.ChampionService;
 import com.safjnest.lol.utils.ChampionBuildTimelineUtils;
 import com.safjnest.lol.utils.ChampionBuildTimelineUtils.ItemEvent;
@@ -145,22 +144,19 @@ public class ChampionInputTest {
             220008, item(220008, """
                 {"maps":{"30":true},"gold":{"total":750,"sell":0}}
                 """),
+            221026, item(221026, """
+                {"maps":{"30":true},"gold":{"total":500,"sell":350}}
+                """),
             2145, item(2145, """
                 {"maps":{"30":true},"tags":["Consumable"]}
                 """));
         ArenaItemCatalog catalog = ArenaItemCatalog.fromItems(items);
-        Match match = new Match();
-        match.patch = "16.23";
-        Participant participant = new Participant();
-        participant.item0 = 220008;
-        participant.item1 = 2145;
-        participant.item2 = 226630;
-        participant.item3 = 220012;
-        participant.item4 = 447111;
+        Document participant = new Document("item0", 220008).append("item1", 2145)
+            .append("item2", 226630).append("item3", 220012).append("item4", 447111).append("item5", 221026);
 
-        ParsedArenaGame game = ArenaGameParser.parse(match, participant, catalog);
+        ParsedArenaGame game = ArenaGameParser.parse("16.23", null, participant, catalog);
 
-        assertEquals(List.of(226630, 220012), game.prismatics());
+        assertEquals(List.of(new ItemEvent(226630, -1), new ItemEvent(220012, -1)), game.prismatics());
         assertEquals(List.of(447111), game.fallbackBuildItems());
         assertEquals(Kind.PRISMATIC, catalog.kind("16.23", 226693));
         assertFalse(ItemUtils.isConsumable(items.get(226630)));

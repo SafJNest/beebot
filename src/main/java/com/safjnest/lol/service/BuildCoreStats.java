@@ -152,7 +152,6 @@ final class BuildCoreStats {
         String bestAdjustedWinrateBuildId = null;
         for (int position = 0; position < indices.size(); position++) {
             int index = indices.getInt(position);
-            Options core = cores.get(index);
             Build.CoreBuildOption option = coreOption(index);
             if (position == 0) {
                 defaultBuildId = option.id();
@@ -160,7 +159,7 @@ final class BuildCoreStats {
             if (index == ranking.bestAdjustedWinrateIndex()) {
                 bestAdjustedWinrateBuildId = option.id();
             }
-            builds.add(toBuild(filter, core, option));
+            builds.add(toBuild(filter, cores.get(index), option));
         }
         return new ChampionBuildSnapshot(filter, builds, defaultBuildId, bestAdjustedWinrateBuildId);
     }
@@ -199,14 +198,16 @@ final class BuildCoreStats {
         starters.sort(Comparator.comparingInt(Build.Option::matches).reversed().thenComparing(Build.Option::id));
         List<List<Build.Option>> itemSlots = options.slots(ITEM_SLOT, ITEM_SLOT_COUNT, total, true);
         List<List<Build.Option>> augments = options.slots(AUGMENT_SLOT, AUGMENT_SLOT_COUNT, total, false);
-        Build.SkillOrderOption order = options.skills.recommended();
+        Build.SkillOrderOption order = options.skills.recommended(SkillOrder.Selection.PREFIX);
         List<Build.SkillOrderOption> skills = order == null ? List.of() : List.of(order);
-        Build.SkillOrderOption evolutions = options.evolutions == null ? null : options.evolutions.recommended();
-
+        Build.SkillOrderOption evolutions = options.evolutions == null ? null
+            : options.evolutions.recommended(SkillOrder.Selection.MOST_PLAYED);
+        List<Build.RuneOption> runes = runeOptions(options, total);
         return new Build(filter, total, core.wins(), core.winrate(), List.of(core), coreItems, starters,
             options.items(BOOTS, total, true), options.items(SUPPORT, total, true),
-            options.items(ROLE_BOUND, total, true), itemSlots, runeOptions(options, total),
-            spellOptions(options, total), skills, evolutions, options.items(PRISMATIC, total, true), augments, null);
+            options.items(ROLE_BOUND, total, true), itemSlots, runes,
+            spellOptions(options, total), skills, evolutions, options.items(PRISMATIC, total, true), augments, null,
+            null, null, List.of());
     }
 
     private List<Build.RuneOption> runeOptions(Options options, int total) {

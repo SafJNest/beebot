@@ -20,7 +20,8 @@ public record ChampionStatistics(
     Trend trend,
     @JsonInclude(JsonInclude.Include.NON_NULL) List<ArenaSynergy> synergies,
     @JsonInclude(JsonInclude.Include.NON_NULL) Map<String, ArenaSubteam> subteams,
-    @JsonInclude(JsonInclude.Include.NON_NULL) Map<String, ArenaSubteam> subteamsById
+    @JsonInclude(JsonInclude.Include.NON_NULL) Map<String, ArenaSubteam> subteamsById,
+    @JsonInclude(JsonInclude.Include.NON_NULL) List<ArenaAllySynergy> allySynergies
 ) {
 
     private static final int EMBED_LIMIT = 3;
@@ -28,19 +29,21 @@ public record ChampionStatistics(
     public ChampionStatistics(Filter filter, Overview overview, List<LaneStat> laneStats,
             Map<Integer, Matchup> matchups, List<LaneSynergy> laneSynergies,
             List<PowerCurvePoint> powerCurve, Trend trend) {
-        this(filter, overview, laneStats, matchups, laneSynergies, powerCurve, trend, null, null, null);
+        this(filter, overview, laneStats, matchups, laneSynergies, powerCurve, trend, null, null, null, null);
     }
 
     public ChampionStatistics(Filter filter, Overview overview, List<LaneStat> laneStats,
             Map<Integer, Matchup> matchups, List<LaneSynergy> laneSynergies,
             List<PowerCurvePoint> powerCurve, Trend trend, List<ArenaSynergy> synergies,
             Map<String, ArenaSubteam> subteams) {
-        this(filter, overview, laneStats, matchups, laneSynergies, powerCurve, trend, synergies, subteams, null);
+        this(filter, overview, laneStats, matchups, laneSynergies, powerCurve, trend, synergies, subteams, null, null);
     }
 
     public record ArenaSynergy(List<Integer> allyChampions, long matches, long wins, double winrate) {
         public ArenaSynergy { allyChampions = List.copyOf(allyChampions); }
     }
+
+    public record ArenaAllySynergy(int allyChampion, long matches, long wins, double winrate, double pickrate) {}
 
     public record ArenaSubteam(long games, long wins, double winrate) {}
 

@@ -29,18 +29,21 @@ public final class ChampionBuildProvider {
         this.filter = filter;
     }
 
-    public static void forEachGame(Filter filter, Job<?> job, Consumer<ChampionBuildData.Game> consumer) {
-        ChampionBuildProvider provider = new ChampionBuildProvider(filter);
+    public void forEachGame(Job<?> job, Consumer<ChampionBuildData.Game> consumer) {
         MongoDB.forEachChampionRawMatchEventBatch(filter, true, job, raw -> {
             if (!raw.usableTimeline())
                 return;
             for (Document participant : participants(raw)) {
                 if (!matches(filter, raw, participant)) continue;
-                ChampionBuildData.Game game = provider.parse(raw, participant);
+                ChampionBuildData.Game game = parse(raw, participant);
                 if (game != null)
                     consumer.accept(game);
             }
         });
+    }
+
+    public Map<Integer, Item> loadedItems() {
+        return itemsById == null ? Map.of() : itemsById;
     }
 
     public static List<Document> participants(ChampionRawMatch raw) {
@@ -110,7 +113,7 @@ public final class ChampionBuildProvider {
         return result;
     }
 
-    private static List<Integer> skillOrder(Document participant) {
+    public static List<Integer> skillOrder(Document participant) {
         List<Integer> order = integers(participant, "skillOrder");
         for (int id : order) {
             if (id >= 0 && id < 10) continue;
