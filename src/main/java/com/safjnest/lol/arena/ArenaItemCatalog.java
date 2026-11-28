@@ -102,7 +102,7 @@ public final class ArenaItemCatalog {
     }
 
     public Kind kind(String patch, int itemId) {
-        if (itemId <= 0 || isConsumable(itemId) || isJuice(itemId)) {
+        if (itemId <= 0 || ItemUtils.isUnupgradedBoots(itemId) || isConsumable(itemId) || isJuice(itemId)) {
             return null;
         }
 

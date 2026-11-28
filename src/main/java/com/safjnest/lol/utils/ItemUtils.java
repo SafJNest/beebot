@@ -14,7 +14,7 @@ import no.stelar7.api.r4j.pojo.lol.staticdata.shared.Gold;
 public class ItemUtils {
 
   public static final int BASE_BOOTS = 1001;
-  private static final int MAGICAL_FOOTWEAR = 2422;
+  public static final int MAGICAL_FOOTWEAR = 2422;
   private static final int MIN_COMPLETED_RECIPE_COST = 1200;
   private static final int ARENA_SHARDBLADE = 220012;
   private static final int ARENA_GOREDRINKER = 226630;
@@ -45,7 +45,7 @@ public class ItemUtils {
       return false;
     }
 
-    boolean isBaseBoots = item.getId() == BASE_BOOTS || isGrantedByRune(item.getId());
+    boolean isBaseBoots = isUnupgradedBoots(item.getId());
     boolean fromBoots = item.getFrom() != null && item.getFrom().contains("1001");
     return isBaseBoots || fromBoots || hasTag(item, "Boots")
         || item.getName() != null && item.getName().toLowerCase(Locale.ROOT).contains("boots");
@@ -68,8 +68,8 @@ public class ItemUtils {
     return componentId > 0 && isBoots(patchItems.get(componentId));
   }
 
-  public static boolean isGrantedByRune(int itemId) {
-    return itemId == MAGICAL_FOOTWEAR;
+  public static boolean isUnupgradedBoots(int itemId) {
+    return itemId == BASE_BOOTS || itemId == MAGICAL_FOOTWEAR;
   }
 
   public static boolean isConsumable(Item item) {
@@ -85,7 +85,7 @@ public class ItemUtils {
   }
 
   public static boolean isBuildPurchase(Item item) {
-    return isPurchasable(item) && !isGrantedByRune(item.getId()) && !isConsumable(item)
+    return isPurchasable(item) && !isUnupgradedBoots(item.getId()) && !isConsumable(item)
         && !isTrinket(item) && !isSupportItem(item);
   }
 

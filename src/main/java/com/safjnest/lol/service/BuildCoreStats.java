@@ -8,6 +8,7 @@ import com.safjnest.lol.model.ChampionBuildSnapshot;
 import com.safjnest.lol.model.Filter;
 import com.safjnest.lol.utils.BuildUtils;
 import com.safjnest.lol.utils.ChampionBuildTimelineUtils.SkillEvents;
+import com.safjnest.lol.utils.ItemUtils;
 
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 import it.unimi.dsi.fastutil.ints.IntList;
@@ -83,7 +84,10 @@ final class BuildCoreStats {
         }
         core.recordItem(BOOTS, signature.boots(), win, purchaseTimes);
         core.recordItem(SUPPORT, signature.suppItem(), win, purchaseTimes);
-        core.recordItem(ROLE_BOUND, game.roleBoundId(), win, purchaseTimes);
+        int roleBoundId = game.roleBoundId();
+        if (!ItemUtils.isUnupgradedBoots(roleBoundId)) {
+            core.recordItem(ROLE_BOUND, roleBoundId, win, purchaseTimes);
+        }
 
         List<Integer> items = signature.fullBuild();
         int itemCount = Math.min(ITEM_SLOT_COUNT, items.size() - 2);

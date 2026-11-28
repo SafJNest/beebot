@@ -1,5 +1,6 @@
 package com.safjnest.lol.service;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -15,6 +16,8 @@ import java.util.concurrent.CompletionException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import com.mongodb.MongoException;
 import com.safjnest.exception.Exception;
 import com.safjnest.lol.queue.scheduler.ComputeScheduler.ChampionWork;
@@ -59,6 +62,8 @@ import no.stelar7.api.r4j.pojo.lol.staticdata.champion.StaticChampion;
 public class ChampionService {
 
     private static final Logger LOG = LoggerFactory.getLogger(ChampionService.class);
+    private static final Cache<String, List<ChampionIndexable>> INDEXABLES = Caffeine.newBuilder()
+        .maximumSize(2).expireAfterWrite(Duration.ofMinutes(5)).build();
 
     public record MatrixRefreshResult(int combinations, int skipped, int generated, int empty, int persistedChampions) {}
     public record ChampionData(ChampionStatistics stats, ChampionBuildSnapshot snapshot, Build arenaBuild) {
@@ -105,6 +110,21 @@ public class ChampionService {
         return refreshArenaInternal(filter, catalog, Objects.requireNonNull(job, "Arena job required"));
     }
 
+    public Filter resolveFilter(int champion, String patch, TierType rank, LeagueShard region,
+            GameQueueType queue, LaneType role) {
+        String selectedPatch = patch == null ? PatchUtils.getPatch() : PatchUtils.patchMajor(patch);
+        GameQueueType selectedQueue = queue == null ? GameQueueType.TEAM_BUILDER_RANKED_SOLO : queue;
+        Filter filter = Filter.championBuild(champion, selectedPatch, selectedQueue).setRank(rank).setRegion(region);
+        if (GameQueueTypeUtils.hasLane(selectedQueue)) {
+            try {
+                filter.setLane(role == null ? primaryRole(champion) : role);
+            } catch (MongoException failure) {
+                throw lookupFailure(filter, failure);
+            }
+        }
+        return filter;
+    }
+
     public ApiResult<ChampionView> get(
         String championValue,
         String patch,
@@ -115,9 +135,7 @@ public class ChampionService {
     ) {
         StaticChampion champion = ChampionUtils.findChampion(championValue);
         if (champion == null) return ApiResult.notFound();
-        GameQueueType selectedQueue = queue != null ? queue : GameQueueType.TEAM_BUILDER_RANKED_SOLO;
-        Filter filter = Filter.championBuild(champion.getId(), patch != null ? patch : PatchUtils.getPatch(), selectedQueue)
-            .setRank(rank).setRegion(region).setLane(role);
+        Filter filter = resolveFilter(champion.getId(), patch, rank, region, queue, role);
         Availability availability = availability(filter);
         if (availability.missing()) {
             return pending(filter, availability);
@@ -135,7 +153,7 @@ public class ChampionService {
 
         String key = RedisKey.CHAMPION_PAGE.of(filter.champion(), filter.pageKey());
         CachedPage cached = RedisClient.get(key, CachedPage.class);
-        boolean arena = selectedQueue == GameQueueType.CHERRY;
+        boolean arena = filter.queue() == GameQueueType.CHERRY;
         ChampionView rawPage;
         if (cached != null && availability.equals(cached.availability()) && cached.page() != null
                 && cached.page().stats() != null && (arena ? cached.page().build() != null : cached.page().builds() != null)) {
@@ -187,7 +205,8 @@ public class ChampionService {
 
     public List<ChampionIndexable> getIndexables() {
         String patch = PatchUtils.getPatch();
-        return patch == null ? List.of() : MongoDB.findChampionIndexables(patch);
+        return patch == null ? List.of() : INDEXABLES.get(patch,
+            key -> List.copyOf(MongoDB.findChampionIndexables(key)));
     }
 
     public boolean refreshBuild(Filter filter, Job<?> job) {
@@ -345,7 +364,9 @@ public class ChampionService {
             }
         }
         MongoDB.upsertChampionIndexables(patch, values);
-        return MongoDB.findChampionIndexables(patch);
+        List<ChampionIndexable> refreshed = List.copyOf(MongoDB.findChampionIndexables(patch));
+        INDEXABLES.put(patch, refreshed);
+        return refreshed;
     }
 
     public void refresh(String patch, Job<?> job) {
@@ -422,6 +443,16 @@ public class ChampionService {
     }
 
     // ============================================================================
+
+    private LaneType primaryRole(int champion) {
+        // Indexables are ordered by champion, then by games descending.
+        for (ChampionIndexable entry : getIndexables()) {
+            if (entry.champion() == champion && entry.games() > 0) {
+                return entry.role();
+            }
+        }
+        return null;
+    }
 
     private boolean refreshArenaInternal(Filter filter, ArenaItemCatalog catalog, Job<?> job) {
         Filter snapshot = arenaFilterSnapshot(filter);

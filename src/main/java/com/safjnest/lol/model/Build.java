@@ -7,6 +7,7 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.safjnest.lol.champion.RuneSignature;
 import com.safjnest.lol.utils.BuildUtils;
+import com.safjnest.lol.utils.ItemUtils;
 import com.safjnest.lol.model.statistics.StatisticalLeaf;
 import com.safjnest.utils.JsonCodec;
 
@@ -44,7 +45,9 @@ public record Build(
 ) {
 
     public Build {
-        roleBoundItemOptions = roleBoundItemOptions == null ? List.of() : List.copyOf(roleBoundItemOptions);
+        starterOptions = withoutUnupgradedBoots(starterOptions);
+        bootOptions = withoutUnupgradedBoots(bootOptions);
+        roleBoundItemOptions = roleBoundItemOptions == null ? List.of() : withoutUnupgradedBoots(List.copyOf(roleBoundItemOptions));
         badges = badges == null ? List.of() : List.copyOf(badges);
         if (skillOrders != null && skillOrders.size() > 1) {
             skillOrders = List.of(skillOrders.getFirst());
@@ -458,6 +461,17 @@ public record Build(
         List<Integer> result = new ArrayList<>();
         for (Option option : options) result.addAll(option.itemIds());
         return result;
+    }
+
+    private static List<Option> withoutUnupgradedBoots(List<Option> options) {
+        if (options != null) {
+            for (Option option : options) {
+                if (ItemUtils.isUnupgradedBoots(option.itemId())) {
+                    return options.stream().filter(value -> !ItemUtils.isUnupgradedBoots(value.itemId())).toList();
+                }
+            }
+        }
+        return options;
     }
 
     private static List<Option> toSlotOptions(List<SlotOption> options, int fallbackMatches) {

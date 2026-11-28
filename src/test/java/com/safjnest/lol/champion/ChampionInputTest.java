@@ -13,7 +13,6 @@ import com.safjnest.lol.arena.ArenaItemCatalog;
 import com.safjnest.lol.arena.ParsedArenaGame;
 import com.safjnest.lol.model.Build.Kind;
 import com.safjnest.lol.model.Filter;
-import com.safjnest.lol.utils.ChampionBuildTimelineUtils.ItemEvent;
 import com.safjnest.lol.service.ChampionService;
 import com.safjnest.lol.utils.ChampionBuildTimelineUtils;
 import com.safjnest.lol.utils.ChampionBuildTimelineUtils.ItemEvent;
@@ -78,6 +77,7 @@ public class ChampionInputTest {
               {"participant":1,"timestamp":1000,"event":"ITEM_PURCHASED","item":2031},
               {"participant":1,"timestamp":1100,"event":"ITEM_PURCHASED","item":2010},
               {"participant":1,"timestamp":1200,"event":"ITEM_PURCHASED","item":2422},
+              {"participant":1,"timestamp":1300,"event":"ITEM_PURCHASED","item":1001},
               {"participant":1,"timestamp":2000,"event":"ITEM_PURCHASED","item":1055},
               {"participant":1,"timestamp":500000,"event":"ITEM_PURCHASED","item":3078},
               {"participant":1,"timestamp":500000,"event":"ITEM_DESTROYED","item":1028},
@@ -97,6 +97,12 @@ public class ChampionInputTest {
             2422, item(2422, """
                 {"tags":["Boots"],"gold":{"purchasable":false,"total":300}}
                 """),
+            1001, item(1001, """
+                {"tags":["Boots"],"gold":{"purchasable":true,"total":300}}
+                """),
+            3006, item(3006, """
+                {"tags":["Boots"],"from":["1001"],"gold":{"purchasable":true,"total":1100}}
+                """),
             1055, item(1055, """
                 {"depth":1,"gold":{"purchasable":true,"total":450}}
                 """),
@@ -110,16 +116,20 @@ public class ChampionInputTest {
                 {"depth":3,"gold":{"purchasable":true,"total":3333}}
                 """));
         List<ItemEvent> purchases = ChampionBuildTimelineUtils.itemEvents(timeline, "player");
-        BuildSignature signature = BuildSignature.from(List.of(3089, 3078, 2422), 0,
+        BuildSignature signature = BuildSignature.from(List.of(3089, 3078, 2422, 1001, 3006), 2422,
             List.of(), List.of(), List.of(), items, purchases);
 
         assertNotNull(signature);
         assertEquals(List.of(1055), signature.starter());
-        assertEquals(2422, signature.boots());
+        assertEquals(3006, signature.boots());
         assertEquals(List.of(3031, 3089), signature.core());
         assertEquals(List.of(3031, 3089, 3078), signature.fullBuild());
         assertTrue(purchases.contains(new ItemEvent(3078, 1500000)));
         assertFalse(purchases.contains(new ItemEvent(3078, 500000)));
+
+        BuildSignature onlyBasicBoots = BuildSignature.from(List.of(3089, 3078, 1001), 1001,
+            List.of(), List.of(), List.of(), items, purchases);
+        assertEquals(0, onlyBasicBoots.boots());
 
         List<ItemEvent> reverse = List.of(new ItemEvent(3089, 600000), new ItemEvent(3031, 1200000));
         BuildSignature reverseSignature = BuildSignature.from(List.of(3031, 3089), 0,
@@ -160,6 +170,20 @@ public class ChampionInputTest {
         assertEquals(List.of(447111), game.fallbackBuildItems());
         assertEquals(Kind.PRISMATIC, catalog.kind("16.23", 226693));
         assertFalse(ItemUtils.isConsumable(items.get(226630)));
+    }
+
+    @Test
+    public void arenaSkipsStoredBaseBootsAndFindsCompletedBootsInInventory() {
+        ArenaItemCatalog catalog = new ArenaItemCatalog(Map.of(1001, Kind.BOOTS, 2422, Kind.BOOTS,
+            223006, Kind.BOOTS, 226630, Kind.PRISMATIC));
+        Document participant = new Document("boots", 1001).append("item0", 2422)
+            .append("item1", 223006).append("item2", 226630);
+
+        ParsedArenaGame game = ArenaGameParser.parse("16.23", null, participant, catalog);
+
+        assertEquals(new ItemEvent(223006, -1), game.boots());
+        assertEquals(new ItemEvent(226630, -1), game.firstPrismatic());
+        assertTrue(game.firstPrismaticFallback());
     }
 
     private static Item item(int id, String data) {

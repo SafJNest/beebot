@@ -1734,7 +1734,9 @@ public final class MongoDB {
         if (filter.queue() == GameQueueType.CHERRY) {
             requireArenaBuildFilter(filter);
             return builds().find(Filters.and(Filters.eq("_id", key),
-                    Filters.exists("build.arena.coverage.orderedItemGames")))
+                    Filters.exists("build.arena.coverage.orderedItemGames"),
+                    Filters.nin("build.arena.boots.id", ItemUtils.BASE_BOOTS, ItemUtils.MAGICAL_FOOTWEAR),
+                    Filters.nin("build.arena.coreBuilds.items", ItemUtils.BASE_BOOTS, ItemUtils.MAGICAL_FOOTWEAR)))
                 .projection(projection).first();
         }
         return builds().find(Filters.eq("_id", key)).projection(projection).first();

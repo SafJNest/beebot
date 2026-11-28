@@ -1,6 +1,7 @@
 package com.safjnest.database.nosql;
 
 import com.safjnest.lol.model.ChampionBuildSnapshot;
+import com.safjnest.lol.model.Build;
 import com.safjnest.lol.model.Filter;
 
 import no.stelar7.api.r4j.basic.constants.types.lol.GameQueueType;
@@ -45,6 +46,28 @@ public class ChampionBuildSnapshotStorageTest {
         document.remove("builds");
 
         MongoDB.readChampionBuildSnapshot(snapshot.filter(), document);
+    }
+
+    @Test
+    public void restoresLegacyItemOptionsWithoutUnupgradedBoots() {
+        Filter filter = emptySnapshot().filter();
+        Build build = new Build(filter, List.of(), List.of(), List.of(), List.of(6672, 3124),
+            List.of(), List.of(), List.of(), List.of(), List.of(), null, 120, 0.5);
+        ChampionBuildSnapshot snapshot = new ChampionBuildSnapshot(filter, List.of(build), "6672-3124", null);
+        Document document = MongoDB.standardBuildDocument(snapshot);
+        Document variant = document.getList("builds", Document.class).getFirst();
+        Document boots = new Document("id", "1001");
+        Document magical = new Document("id", "2422");
+        Document completed = new Document("id", "3006");
+        variant.put("starters", List.of(boots, new Document("id", "1055")));
+        variant.put("boots", List.of(boots, magical, completed));
+        variant.put("roleBoundItems", List.of(boots, magical, completed));
+
+        Build restored = MongoDB.readChampionBuildSnapshot(filter, document).defaultBuild();
+
+        assertEquals(List.of(1055), restored.starter());
+        assertEquals(List.of(3006), restored.bootOptions().stream().map(Build.Option::itemId).toList());
+        assertEquals(List.of(3006), restored.roleBoundItemOptions().stream().map(Build.Option::itemId).toList());
     }
 
     public static ChampionBuildSnapshot roundTrip(ChampionBuildSnapshot snapshot) {

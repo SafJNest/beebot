@@ -93,7 +93,7 @@ public final class ChampionBuildProvider {
             integers(participant, "secondaryRunes"), integers(participant, "statsRunes"));
         Map<Integer, Long> itemTimes = new LinkedHashMap<>();
         for (ChampionBuildTimelineUtils.ItemEvent purchase : purchases) {
-            if (!ItemUtils.isGrantedByRune(purchase.itemId())) {
+            if (!ItemUtils.isUnupgradedBoots(purchase.itemId())) {
                 itemTimes.putIfAbsent(purchase.itemId(), purchase.timestampMillis());
             }
         }

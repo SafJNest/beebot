@@ -97,6 +97,18 @@ the optional fallback for instances without R2. See [R2 credentials](https://dev
 
 ## Champion refresh diagnostics
 
+The champion API and Discord `/champion` default to Ranked Solo/Duo on the
+current patch, across all ranks and regions. `rank` and `region` are `null` in
+the resolved filter for those defaults. In queues with positions, an omitted
+role uses the champion's most played role from the current champion indexables,
+when available. This role is part of the build key. The statistics scope is
+shared across roles. ARAM and Arena have no role filter.
+Discord exposes `champion`, optional `role` and optional `queue`. The queue
+choices are Ranked Solo/Duo, Ranked Flex, Draft Pick, ARAM and Arena.
+Recommendations exclude regular Boots and Slightly Magical Footwear. Discord
+shows up to three starters, three completed boots and four alternatives for
+each displayed slot after the core.
+
 For `GET /api/lol/champion/{champion}`, `202` includes `metadata.filter`,
 `metadata.missing` (`stats`, `build`, or both) and `metadata.jobIds`. Follow those
 PIDs on `/api/status` and in the `ChampionJob` and `ChampionInput` logs. Invalid

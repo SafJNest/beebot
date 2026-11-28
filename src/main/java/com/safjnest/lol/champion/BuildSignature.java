@@ -50,11 +50,11 @@ public record BuildSignature(
         List<Integer> starterItems = starter == 0 ? List.of() : List.of(starter);
         List<Integer> core = List.copyOf(fullBuild.subList(0, CORE_SIZE));
         Item roleBoundItem = items.get(roleBoundId);
-        int boots = ItemUtils.isBoots(roleBoundItem, items) ? roleBoundId : 0;
+        int boots = !ItemUtils.isUnupgradedBoots(roleBoundId) && ItemUtils.isBoots(roleBoundItem, items) ? roleBoundId : 0;
         int supportItem = ItemUtils.isSupportItem(roleBoundItem) ? roleBoundId : 0;
         for (int id : inventory) {
             Item item = items.get(id);
-            if (boots == 0 && ItemUtils.isBoots(item, items)) {
+            if (boots == 0 && !ItemUtils.isUnupgradedBoots(id) && ItemUtils.isBoots(item, items)) {
                 boots = id;
             }
             if (supportItem == 0 && ItemUtils.isSupportItem(item)) {

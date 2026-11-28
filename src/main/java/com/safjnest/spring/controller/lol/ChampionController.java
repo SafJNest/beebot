@@ -62,7 +62,7 @@ public class ChampionController {
             @RequestParam(value = "role", required = false) String roleValue,
             @RequestParam(value = "lane", required = false) String laneValue
     ) {
-        GameQueueType queue = LolApiParameters.queue(queueValue);
+        GameQueueType queue = queueValue == null || queueValue.isBlank() ? null : LolApiParameters.queue(queueValue);
         TierType rank = LolApiParameters.rank(rankValue);
         LeagueShard region = LolApiParameters.region(regionValue);
         LaneType role = LolApiParameters.role(roleValue);
@@ -71,7 +71,7 @@ public class ChampionController {
             throw LolApiParameters.invalid("role", "conflicts with lane");
         if (role == null) role = lane;
         LolApiParameters.validateRole(queue, role);
-        if (!GameQueueTypeUtils.championBuildQueues().contains(queue))
+        if (queue != null && !GameQueueTypeUtils.championBuildQueues().contains(queue))
             throw LolApiParameters.invalid("queue", "is not supported for champion builds");
         if (rank == TierType.UNRANKED)
             throw LolApiParameters.invalid("rank", "omit rank for all ranks");
