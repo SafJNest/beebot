@@ -26,6 +26,8 @@ import org.bson.types.ObjectId;
 import org.bson.conversions.Bson;
 import org.json.JSONArray;
 import org.json.JSONObject;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.mongodb.MongoCommandException;
 import com.mongodb.MongoClientSettings;
@@ -56,9 +58,13 @@ import com.safjnest.database.sql.QueryRecord;
 import com.safjnest.database.sql.QueryRecordParser;
 import com.safjnest.lol.utils.ItemUtils;
 import com.safjnest.lol.model.Build;
+import com.safjnest.lol.model.ChampionBuildSnapshot;
+import com.safjnest.lol.model.statistics.ChampionStatsDocument;
+import com.safjnest.lol.model.statistics.shared.ChampionStatsScope;
 import com.safjnest.lol.model.ArenaBuildData;
 import com.safjnest.lol.model.ChampionIndexable;
 import com.safjnest.lol.model.ProfileIndexable;
+import com.safjnest.config.MongoSettings;
 import com.safjnest.config.Settings;
 import com.safjnest.lol.model.competitive.CompetitiveEntry;
 import com.safjnest.lol.model.Filter;
@@ -84,6 +90,7 @@ import com.safjnest.lol.utils.PatchUtils;
 import com.safjnest.lol.utils.LaneTypeUtils;
 import com.safjnest.lol.utils.LeagueShardUtils;
 import com.safjnest.lol.utils.MatchMemoryUtils;
+import com.safjnest.lol.queue.job.Job;
 import com.safjnest.lol.utils.MatchupTimelineUtils;
 import com.safjnest.lol.utils.RankProgressUtils;
 import com.safjnest.lol.utils.TierDivisionUtils;
@@ -111,13 +118,10 @@ public final class MongoDB {
     private static final int AI_TRAINING_CURSOR_BATCH_SIZE = 10_000;
     private static final String COMPRESSED_STORAGE_ENGINE_CONFIG = "block_compressor=zstd";
     private static final String MATCH_FACETS_COLLECTION = "match_facets";
-    private static final int CHAMPION_BUILD_EVENT_BATCH_SIZE = 100;
-    private static final int CHAMPION_BUILD_GENERATION_VERSION = 3;
+    private static final Logger CHAMPION_INPUT_LOG = LoggerFactory.getLogger("ChampionInput");
+    private static final int CHAMPION_MATCH_BATCH_SIZE = 2_000;
+    private static final int CHAMPION_EVENT_BATCH_SIZE = 1_000;
     private static final int CHAMPION_BUILD_MAX_BSON_BYTES = 16 * 1024 * 1024 - 256 * 1024;
-    private static final List<String> CHAMPION_STANDARD_BUILD_FIELDS = List.of(
-            "filter", "games", "wins", "winrate", "coreBuilds", "coreItems", "starters", "boots",
-            "supportItems", "roleBoundItems", "slots", "runes", "summonerSpells", "skillOrders",
-            "prismatics", "augments");
     private static final List<String> CHAMPION_BUILD_PARTICIPANT_PROJECTION_FIELDS = List.of(
             "participants.id", "participants.puuid", "participants.champion", "participants.lane", "participants.win",
             "participants.boots", "participants.subTeamPlacement",
@@ -164,9 +168,6 @@ public final class MongoDB {
         return new CreateCollectionOptions().storageEngineOptions(new Document("wiredTiger", new Document("configString", COMPRESSED_STORAGE_ENGINE_CONFIG)));
     }
 
-    public static final String PRODUCTION_DATABASE = "beebot_test"; //cant rename mongo db...
-    public static final String TEST_DATABASE = "beebot_test_test";
-    private static final String MONGO_URI_ERROR = "Mongo URI is missing from settings.json";
     private static MongoClient client;
     private static MongoDatabase database;
     private static boolean collectionsReady;
@@ -176,7 +177,8 @@ public final class MongoDB {
 
     public static synchronized MongoDatabase getDatabase() {
         if (database == null) {
-            database = getClient().getDatabase(App.isTesting() ? TEST_DATABASE : PRODUCTION_DATABASE);
+            String name = getDatabaseName();
+            database = getClient().getDatabase(name);
         }
         if (!collectionsReady) {
             ensureCollections(database);
@@ -194,7 +196,11 @@ public final class MongoDB {
     }
 
     public static String getDatabaseName(boolean testing) {
-        return testing ? TEST_DATABASE : PRODUCTION_DATABASE;
+        MongoSettings mongo = Settings.get().services().getMongo();
+        if (mongo == null) {
+            throw new IllegalStateException("Missing services.mongo");
+        }
+        return mongo.databaseName(testing);
     }
 
     public static MongoDatabase database() {
@@ -203,8 +209,11 @@ public final class MongoDB {
 
     public static synchronized MongoClient getClient() {
         if (client == null) {
-            String uri = Settings.get().services().getMongo();
-            if (uri == null || uri.isBlank()) throw new IllegalStateException(MONGO_URI_ERROR);
+            MongoSettings mongo = Settings.get().services().getMongo();
+            String uri = mongo == null ? null : mongo.uri();
+            if (uri == null || uri.isBlank()) {
+                throw new IllegalStateException("Missing services.mongo.uri");
+            }
             ConnectionString connection = new ConnectionString(uri);
             if (connection.getDatabase() != null && !connection.getDatabase().isBlank()) {
                 throw new IllegalStateException("Mongo URI must not select an application database");
@@ -800,118 +809,6 @@ public final class MongoDB {
         return result;
     }
 
-    public static void forEachChampionBuildRawBatch(Filter filter, int batchSize,
-                                                     Consumer<List<QueryRecord>> consumer) {
-        if (filter == null || consumer == null || batchSize <= 0) return;
-        List<QueryRecord> batch = new ArrayList<>(batchSize);
-        try {
-            forEachChampionRawMatchEventBatch(filter, CHAMPION_BUILD_EVENT_BATCH_SIZE, true, raw -> {
-                Document match = raw.document();
-                List<QueryRecord> records = championBuildRecords(match, filter);
-                for (QueryRecord record : records) {
-                    batch.add(record);
-                    if (batch.size() >= batchSize) {
-                        consumer.accept(batch);
-                        batch.clear();
-                    }
-                }
-            });
-            if (!batch.isEmpty()) consumer.accept(batch);
-        } finally {
-            MatchMemoryUtils.release(batch);
-        }
-    }
-
-    public static void forEachChampionArenaMatchBatch(Filter filter, int batchSize,
-                                                       Consumer<List<Match>> consumer) {
-        if (consumer == null || batchSize <= 0 || batchSize > CHAMPION_BUILD_EVENT_BATCH_SIZE)
-            throw new IllegalArgumentException("Arena consumer and batch size 1..100 required");
-        requireArenaBuildFilter(filter);
-        List<Match> batch = new ArrayList<>(batchSize);
-        try {
-            forEachChampionRawMatchEventBatch(filter, batchSize, true, raw -> {
-                batch.add(championRawMatch(raw.document()));
-                if (batch.size() == batchSize) {
-                    consumer.accept(batch);
-                    MatchMemoryUtils.release(batch);
-                }
-            });
-            if (!batch.isEmpty()) consumer.accept(batch);
-        } finally {
-            MatchMemoryUtils.release(batch);
-        }
-    }
-
-    public static Match championRawMatch(Document document) {
-        Match match = readMatch(QueryRecordParser.fromDocument(document));
-        match.eventData = null;
-        return match;
-    }
-
-    public static List<QueryRecord> championBuildRecords(Document match, Filter filter) {
-        if (match == null || filter == null) return List.of();
-        String rawTimeline = match.getString("events");
-        if (rawTimeline == null || rawTimeline.isBlank()) return List.of();
-        JSONObject timeline;
-        try {
-            timeline = new JSONObject(rawTimeline);
-        } catch (RuntimeException ignored) {
-            return List.of();
-        }
-        if (!MatchupTimelineUtils.hasTimeline(timeline)) return List.of();
-        List<QueryRecord> result = new ArrayList<>();
-        try {
-            for (Document participant : documents(match.get("participants")))
-                if (matchesChampionBuildFilter(match, participant, filter))
-                    result.add(championBuildRecord(match, participant, timeline));
-            return result;
-        } finally {
-            MatchMemoryUtils.release(timeline);
-        }
-    }
-
-    private static QueryRecord championBuildRecord(Document match, Document participant, JSONObject timeline) {
-        JSONObject build = new JSONObject();
-        JSONObject buildData = new JSONObject();
-        buildData.put("role_bound", participant.getInteger("roleQuestId", 0));
-        buildData.put("build", new JSONArray(List.of(
-                participant.getInteger("item0", 0), participant.getInteger("item1", 0), participant.getInteger("item2", 0),
-                participant.getInteger("item3", 0), participant.getInteger("item4", 0), participant.getInteger("item5", 0),
-                participant.getInteger("item6", 0))));
-        List<Integer> prismatics = new ArrayList<>();
-        for (int index = 0; index <= 6; index++) {
-            int itemId = participant.getInteger("item" + index, 0);
-            if (ItemUtils.isPrismatic(itemId)) prismatics.add(itemId);
-        }
-        build.put("prismatics", new JSONArray(prismatics));
-        build.put("build", buildData);
-        if (timeline != null) build.put("timeline", timeline);
-        build.put("skill_order", new JSONArray(readIntegers(participant, "skillOrder")));
-        build.put("augments", new JSONArray(readIntegers(participant, "augments")));
-        build.put("summoner_spells", new JSONArray(List.of(
-                participant.getInteger("summonerSpell1", 0), participant.getInteger("summonerSpell2", 0))));
-        build.put("runes", new JSONObject()
-            .put("primary", new JSONArray(readIntegers(participant, "primaryRunes")))
-            .put("secondary", new JSONArray(readIntegers(participant, "secondaryRunes")))
-            .put("stats", new JSONArray(readIntegers(participant, "statsRunes"))));
-        return QueryRecordParser.fromMap(Map.of(
-                "game_id", match.getString("_id"),
-                "puuid", participant.getString("puuid") == null ? "" : participant.getString("puuid"),
-                "win", participant.getBoolean("win", false),
-                "build", build.toString()));
-    }
-
-    public static long countChampionMatchesByFilter(Filter filter) {
-        return countChampionMatches(filter);
-    }
-
-    public static List<QueryRecord> findChampionRecordsByIds(List<String> fullGameIds) {
-        if (fullGameIds == null || fullGameIds.isEmpty()) return List.of();
-        List<QueryRecord> result = new ArrayList<>();
-        for (Document document : matches().find(Filters.in("_id", fullGameIds))) result.add(matchRecord(document));
-        return result;
-    }
-
     public static String getSummonerNameById(String puuid, LeagueShard shard) {
         Summoner summoner = findSummoner(puuid, shard);
         return summoner == null ? null : summoner.riotId();
@@ -933,36 +830,6 @@ public final class MongoDB {
             break;
         }
         return QueryRecordParser.fromDocument(row);
-    }
-
-    private static boolean matchesChampionFilter(Document participant, Filter filter) {
-        if (filter == null) return true;
-        if (filter.champion() != 0 && participant.getInteger("champion", 0) != filter.champion()) return false;
-        return filter.lane() == null || !GameQueueTypeUtils.hasLane(filter.queue())
-                || filter.lane().name().equals(participant.getString("lane"));
-    }
-
-    private static boolean matchesChampionBuildFilter(Document match, Document participant, Filter filter) {
-        if (!matchesChampionFilter(participant, filter)) return false;
-        if (filter.region() != null && !filter.region().name().equals(match.getString("region"))) return false;
-        if (filter.rank() == null) return true;
-        TierType rank;
-        try {
-            rank = TierType.valueOf(match.getString("rank"));
-        } catch (RuntimeException ignored) {
-            return false;
-        }
-        return filter.rankBehavior() == Filter.RankBehavior.EXACT
-            ? rank == filter.rank()
-            : rank.ordinal() <= filter.rank().ordinal();
-    }
-
-    private static List<Integer> readIntegers(Document document, String field) {
-        Object value = document.get(field);
-        if (!(value instanceof List<?> values)) return List.of();
-        List<Integer> result = new ArrayList<>();
-        for (Object item : values) if (item instanceof Number number) result.add(number.intValue());
-        return result;
     }
 
     private static MongoCollection<Document> summoners() {
@@ -1839,29 +1706,68 @@ public final class MongoDB {
         return findProfileStatistics(puuids, Filter.summoner(seasonStart, 0));
     }
 
-    public static List<Build> findChampionBuilds(Filter filter) {
-        if (filter == null) return List.of();
-        List<Build> result = new ArrayList<>();
-        Bson query = Filters.and(
-                Filters.eq("filterKey", filter.toKey()),
-                Filters.eq("buildVersion", CHAMPION_BUILD_GENERATION_VERSION));
-        for (Document document : builds().find(query)) {
-            Build build = readBuild(document);
-            if (build != null) result.add(build);
+    public static Build findChampionArenaBuild(Filter filter) {
+        Document document = championBuildDocument(filter, null);
+        if (document == null) {
+            return null;
+        }
+        championBuildUpdatedAt(filter, document);
+        if (document.get("build") instanceof Map<?, ?> payload) {
+            ArenaBuildData arena = readStructured(payload.get("arena"), ArenaBuildData.class);
+            if (arena != null) {
+                return Build.fromArena(filter, arena);
+            }
+        }
+        throw invalidChampionAggregate("build", filter.toKey(), "Invalid build payload");
+    }
+
+    public static ChampionBuildSnapshot findChampionBuildSnapshot(Filter filter) {
+        if (filter.queue() == GameQueueType.CHERRY) {
+            return null;
+        }
+        Document document = championBuildDocument(filter, null);
+        return readChampionBuildSnapshot(filter, document);
+    }
+
+    private static Document championBuildDocument(Filter filter, Bson projection) {
+        String key = filter.toKey();
+        if (filter.queue() == GameQueueType.CHERRY) {
+            requireArenaBuildFilter(filter);
+            return builds().find(Filters.and(Filters.eq("_id", key),
+                    Filters.exists("build.arena.coverage.orderedItemGames"),
+                    Filters.nin("build.arena.boots.id", ItemUtils.BASE_BOOTS, ItemUtils.MAGICAL_FOOTWEAR),
+                    Filters.nin("build.arena.coreBuilds.items", ItemUtils.BASE_BOOTS, ItemUtils.MAGICAL_FOOTWEAR)))
+                .projection(projection).first();
+        }
+        return builds().find(Filters.eq("_id", key)).projection(projection).first();
+    }
+
+    private static long championBuildUpdatedAt(Filter filter, Document document) {
+        boolean arena = filter.queue() == GameQueueType.CHERRY;
+        long updatedAt = number(document, arena ? "arenaLastUpdate" : "lastUpdate");
+        if (updatedAt <= 0)
+            throw invalidChampionAggregate("build", filter.toKey(), "Missing build update timestamp");
+        return updatedAt;
+    }
+
+    private static com.safjnest.exception.Exception invalidChampionAggregate(String component, String key, String cause) {
+        return new com.safjnest.exception.Exception(com.safjnest.exception.Exception.Type.INVALID_UPSTREAM_RESPONSE,
+            "champion_" + component + "_invalid", cause + " for " + component + " key=" + key);
+    }
+
+    public static List<Filter> findStoredChampionBuildFilters() {
+        List<Filter> result = new ArrayList<>();
+        for (Document document : builds().find().projection(Projections.include("_id"))) {
+            if (!(document.get("_id") instanceof String key)) {
+                continue;
+            }
+            try {
+                result.add(Filter.fromKey(key));
+            } catch (RuntimeException ignored) {
+                // Ignore invalid filter keys when planning refreshes.
+            }
         }
         return result;
-    }
-
-    public static ArenaBuildData findChampionArena(Filter filter) {
-        requireArenaBuildFilter(filter);
-        Document document = builds().find(Filters.eq("_id", filter.toKey()))
-            .projection(Projections.include("build.arena")).first();
-        if (document == null || !(document.get("build") instanceof Map<?, ?> build)) return null;
-        return JsonCodec.fromDocument(build.get("arena"), ArenaBuildData.class);
-    }
-
-        public static List<Filter> findStoredChampionBuildFilters() {
-        return readFilters(builds(), false);
     }
 
     public static List<Filter> findChampionBuildRefreshFilters(String patch) {
@@ -1871,18 +1777,8 @@ public final class MongoDB {
     // Old champion_statistics flow removed — use ChampionStatsDocument with scope
 
     public static long findChampionBuildLastUpdate(Filter filter) {
-        if (filter == null) return 0;
-        if (filter.queue() == GameQueueType.CHERRY) {
-            Document arena = builds().find(Filters.and(Filters.eq("_id", filter.toKey()),
-                Filters.exists("build.arena")))
-                .projection(Projections.include("arenaLastUpdate")).first();
-            return arena == null ? 0 : number(arena, "arenaLastUpdate");
-        }
-        Document document = builds().find(Filters.eq("filterKey", filter.toKey()))
-            .projection(Projections.include("lastUpdate", "buildVersion")).first();
-        return document == null || number(document, "buildVersion") != CHAMPION_BUILD_GENERATION_VERSION
-                ? 0
-                : number(document, "lastUpdate");
+        Document document = championBuildDocument(filter, Projections.include("lastUpdate", "arenaLastUpdate"));
+        return document == null ? 0 : championBuildUpdatedAt(filter, document);
     }
 
     public static List<GameQueueType> findChampionQueues(String patch) {
@@ -1896,10 +1792,6 @@ public final class MongoDB {
         return queues;
     }
 
-        public static long countChampionMatches(Filter filter) {
-        return matches().countDocuments(championMatchFilter(filter, null));
-    }
-
         public static List<QueryRecord> findChampionParticipantProjections(List<String> fullGameIds) {
         return matchProjections(fullGameIds, true);
     }
@@ -1908,138 +1800,150 @@ public final class MongoDB {
         return matchProjections(fullGameIds, false);
     }
 
-    public record ChampionRawDocuments(List<Document> documents, long matchReadNanos, long eventReadNanos) {}
+    public record ChampionRawMatch(Document document, JSONObject timeline, boolean usableTimeline) {}
 
-    public record ChampionRawMatch(Document document, long matchReadNanos, long eventReadNanos) {}
-
-    public static void forEachChampionRawMatchEventBatch(Filter filter, int batchSize, boolean withBuild,
-                                                           Consumer<ChampionRawMatch> consumer) {
-        if (filter == null || batchSize <= 0 || consumer == null) return;
-        List<String> batch = new ArrayList<>(batchSize);
+    public static void forEachChampionRawMatchEventBatch(Filter filter, boolean withBuild, Job<?> job,
+            Consumer<ChampionRawMatch> consumer) {
+        Bson predicate = championMatchFilter(filter, null);
+        List<String> ids = new ArrayList<>(CHAMPION_MATCH_BATCH_SIZE);
+        boolean arena = withBuild && filter.queue() == GameQueueType.CHERRY;
+        long pid = job == null ? 0 : job.pid();
+        String context = "[ChampionInput] pid=" + pid + " work="
+            + (filter.champion() == 0 ? (withBuild ? "STATS+BUILD" : "STATS") : "BUILD")
+            + " patch=" + filter.patch() + " queue=" + filter.queue() + " filter=" + filter.toKey();
+        int batch = 0;
+        long seen = 0;
+        long idsRead = 0;
         try {
-            long countedMatches = countChampionMatches(filter);
-            long plannedBatches = countedMatches / batchSize + (countedMatches % batchSize == 0 ? 0 : 1);
-            int batchNumber = 0;
-            FindIterable<Document> query = matches().find(championMatchFilter(filter, null))
-                .projection(Projections.include("_id")).batchSize(batchSize);
-            try (MongoCursor<Document> cursor = query.iterator()) {
+            if (job != null)
+                job.phase("READ_MATCH_IDS");
+            CHAMPION_INPUT_LOG.info("{} phase=READ_MATCH_IDS", context);
+            long idsStarted = System.nanoTime();
+            try (MongoCursor<Document> cursor = matches().find(predicate).projection(Projections.include("_id"))
+                    .batchSize(CHAMPION_MATCH_BATCH_SIZE).iterator()) {
                 while (cursor.hasNext()) {
-                    Document document = cursor.next();
-                    try {
-                        String matchId = document.getString("_id");
-                        if (matchId != null) batch.add(matchId);
-                        if (batch.size() == batchSize)
-                            processChampionRawMatchEventBatch(filter, batch, batchSize, withBuild, consumer,
-                                ++batchNumber, plannedBatches);
-                    } finally {
-                        MatchMemoryUtils.release(document);
-                    }
+                    String id = cursor.next().getString("_id");
+                    if (id == null) continue;
+                    ids.add(id);
+                    if (ids.size() < CHAMPION_MATCH_BATCH_SIZE) continue;
+                    seen += ids.size();
+                    idsRead += System.nanoTime() - idsStarted;
+                    processChampionRawMatchEventBatch(ids, withBuild, arena, job, consumer, context, ++batch, seen);
+                    ids.clear();
+                    if (job != null)
+                        job.phase("READ_MATCH_IDS");
+                    idsStarted = System.nanoTime();
                 }
-                if (!batch.isEmpty())
-                    processChampionRawMatchEventBatch(filter, batch, batchSize, withBuild, consumer,
-                        ++batchNumber, plannedBatches);
+                idsRead += System.nanoTime() - idsStarted;
+                if (!ids.isEmpty()) {
+                    seen += ids.size();
+                    processChampionRawMatchEventBatch(ids, withBuild, arena, job, consumer, context, ++batch, seen);
+                }
             }
-        } finally {
-            MatchMemoryUtils.release(batch);
+            CHAMPION_INPUT_LOG.info("{} outcome=INPUT_DONE batches={} selected={} mongoMatchIdsMs={}",
+                context, batch, seen, idsRead / 1_000_000);
+        } catch (RuntimeException | Error failure) {
+            CHAMPION_INPUT_LOG.warn("{} outcome=FAILED batch={} phase={}", context, batch,
+                job == null ? "INPUT" : job.phase(), failure);
+            throw failure;
         }
     }
 
-    private static void processChampionRawMatchEventBatch(Filter filter,
-            List<String> batch, int batchSize, boolean withBuild, Consumer<ChampionRawMatch> consumer,
-            int batchNumber, long plannedBatches) {
-        if (batch.isEmpty()) return;
-        String progress = "[refresh build]: generating "
-            + (filter.champion() == 0 ? "stats" : "build champion " + filter.champion())
-            + " | queue " + (filter.queue() == null ? "All" : GameQueueTypeUtils.prettyName(filter.queue()))
-            + " | batch " + batchNumber + "/" + plannedBatches;
-        BotLogger.info(progress);
+    private static void processChampionRawMatchEventBatch(List<String> ids, boolean withBuild, boolean arena, Job<?> job,
+            Consumer<ChampionRawMatch> consumer, String context, int batch, long seen) {
         Map<String, Document> matchesById = new HashMap<>();
+        String progress = context + " batch=" + batch + " selected=" + seen;
+        String readEvents = "READ_EVENTS batch=" + batch;
+        String prepareInput = "PREPARE_INPUT batch=" + batch;
+        String processInput = "PROCESS_INPUT batch=" + batch;
+        if (job != null)
+            job.phase("READ_MATCHES batch=" + batch);
+        CHAMPION_INPUT_LOG.info("{} phase=READ_MATCHES ids={}", progress, ids.size());
+        long matchesStarted = System.nanoTime();
         try {
-            try (MongoCursor<Document> cursor = matches().find(Filters.in("_id", batch))
+            try (MongoCursor<Document> cursor = matches().find(Filters.in("_id", ids))
                     .projection(withBuild ? championRawWithBuildProjection() : championRawProjection())
-                    .batchSize(batchSize).iterator()) {
+                    .batchSize(CHAMPION_MATCH_BATCH_SIZE).iterator()) {
                 while (cursor.hasNext()) {
                     Document match = cursor.next();
-                    String matchId = match.getString("_id");
-                    if (matchId != null) matchesById.put(matchId, match);
-                    else MatchMemoryUtils.release(match);
+                    matchesById.put(match.getString("_id"), match);
                 }
             }
-            try (MongoCursor<Document> cursor = matchEvents().find(Filters.in("_id", batch))
-                    .batchSize(batchSize).iterator()) {
+            int matches = matchesById.size();
+            long matchRead = System.nanoTime() - matchesStarted;
+            long eventRead = 0;
+            long prepare = 0;
+            long consume = 0;
+            long eventBytes = 0;
+            int events = 0;
+            int unusable = 0;
+            if (job != null)
+                job.phase(readEvents);
+            CHAMPION_INPUT_LOG.info("{} phase=READ_EVENTS matches={}", progress, matches);
+            long readStarted = System.nanoTime();
+            try (MongoCursor<Document> cursor = matchEvents().find(Filters.in("_id", ids))
+                    .projection(Projections.include("_id", "data", "encoding", "uncompressedBytes", "checksum"))
+                    .batchSize(CHAMPION_EVENT_BATCH_SIZE).iterator()) {
                 while (cursor.hasNext()) {
-                    long eventStarted = System.nanoTime();
                     Document event = cursor.next();
-                    Document match = matchesById.get(event.getString("_id"));
+                    eventRead += System.nanoTime() - readStarted;
+                    Document match = matchesById.remove(event.getString("_id"));
+                    JSONObject timeline = null;
                     try {
-                        if (match == null) continue;
-                        match.put("events", decodeMatchEventsJson(event));
-                        consumer.accept(new ChampionRawMatch(match, 0, System.nanoTime() - eventStarted));
-                        matchesById.remove(event.getString("_id"));
+                        if (match != null) {
+                            long started = System.nanoTime();
+                            if (job != null)
+                                job.phase(prepareInput);
+                            String data = decodeMatchEventsJson(event);
+                            timeline = MatchupTimelineUtils.eventObject(data);
+                            if (arena && timeline == null)
+                                throw new IllegalStateException("Invalid Arena timeline JSON for " + event.getString("_id"));
+                            boolean usable = MatchupTimelineUtils.hasTimeline(timeline);
+                            eventBytes += event.getInteger("uncompressedBytes", 0);
+                            events++;
+                            if (!usable)
+                                unusable++;
+                            prepare += System.nanoTime() - started;
+                            started = System.nanoTime();
+                            if (job != null)
+                                job.phase(processInput);
+                            consumer.accept(new ChampionRawMatch(match, timeline, usable));
+                            consume += System.nanoTime() - started;
+                        }
                     } finally {
-                        MatchMemoryUtils.release(event);
-                        if (match != null) MatchMemoryUtils.release(match);
+                        MatchMemoryUtils.release(timeline);
+                        MatchMemoryUtils.release(match);
+                        event.clear();
                     }
+                    if (job != null)
+                        job.phase(readEvents);
+                    readStarted = System.nanoTime();
                 }
+                eventRead += System.nanoTime() - readStarted;
             }
+            int missing = matchesById.size();
+            if (job != null)
+                job.phase(processInput);
+            long started = System.nanoTime();
             for (Document match : matchesById.values()) {
                 try {
-                    consumer.accept(new ChampionRawMatch(match, 0, 0));
+                    consumer.accept(new ChampionRawMatch(match, null, false));
                 } finally {
                     MatchMemoryUtils.release(match);
                 }
             }
+            consume += System.nanoTime() - started;
             matchesById.clear();
-        } catch (RuntimeException | Error exception) {
-            BotLogger.warning(progress + " | failed: " + exception.getMessage());
-            throw exception;
+            CHAMPION_INPUT_LOG.info("{} outcome=OK matches={} missingMatches={} events={} missingEvents={} unusableEvents={} "
+                    + "eventBytes={} mongoMatchesMs={} mongoEventsMs={} validateParseMs={} consumeMs={}",
+                progress, matches, ids.size() - matches, events, missing, unusable, eventBytes,
+                matchRead / 1_000_000, eventRead / 1_000_000, prepare / 1_000_000, consume / 1_000_000);
         } finally {
-            MatchMemoryUtils.release(matchesById);
-            MatchMemoryUtils.release(batch);
+            if (!matchesById.isEmpty())
+                MatchMemoryUtils.release(matchesById);
         }
     }
 
-    public static List<Document> findChampionRawDocuments(List<String> fullGameIds) {
-        return findChampionRawDocumentsTimed(fullGameIds).documents();
-    }
-
-    public static ChampionRawDocuments findChampionRawDocumentsTimed(List<String> fullGameIds) {
-        if (fullGameIds == null || fullGameIds.isEmpty()) return new ChampionRawDocuments(List.of(), 0, 0);
-        long matchReadStarted = System.nanoTime();
-        FindIterable<Document> query = matches().find(Filters.in("_id", boundedIds(fullGameIds)))
-                .projection(Projections.include(
-                        "_id", "bans", "timeStart", "timeEnd",
-                        "participants.champion", "participants.lane", "participants.win", "participants.team",
-                        "participants.kda", "participants.cs", "participants.goldEarned", "participants.puuid"))
-                .limit(Math.min(MAX_BATCH_IDS, fullGameIds.size()));
-        List<Document> result = new ArrayList<>();
-        try (MongoCursor<Document> cursor = query.iterator()) {
-            while (cursor.hasNext()) result.add(cursor.next());
-        }
-        long matchReadNanos = System.nanoTime() - matchReadStarted;
-        long eventReadNanos = 0;
-        if (!result.isEmpty()) {
-            List<String> ids = new ArrayList<>(result.size());
-            Map<String, Document> byId = new HashMap<>();
-            for (Document document : result) {
-                String id = document.getString("_id");
-                if (id != null) {
-                    ids.add(id);
-                    byId.put(id, document);
-                }
-            }
-            long eventReadStarted = System.nanoTime();
-            try (MongoCursor<Document> cursor = matchEvents().find(Filters.in("_id", ids)).iterator()) {
-                while (cursor.hasNext()) {
-                    Document event = cursor.next();
-                    Document match = byId.get(event.getString("_id"));
-                    if (match != null) match.put("events", decodeMatchEventsJson(event));
-                }
-            }
-            eventReadNanos = System.nanoTime() - eventReadStarted;
-        }
-        return new ChampionRawDocuments(result, matchReadNanos, eventReadNanos);
-    }
 
     public static List<Summoner> findLeaderboardPage(
             TierType rank,
@@ -3047,24 +2951,12 @@ public final class MongoDB {
         return deleteProfileStatistics(puuid, Filter.summoner(seasonStart, 0));
     }
 
-    public static boolean upsertChampionBuild(Build build) {
-        if (build == null || build.filter() == null) return false;
-        Document update = standardBuildUpdate(build);
-        UpdateResult result = builds().updateOne(Filters.eq("_id", build.filter().toKey()), update,
-            new UpdateOptions().upsert(true));
-        if (!result.wasAcknowledged()) throw new IllegalStateException("Champion build update was not acknowledged");
-        return true;
-    }
-
-    public static boolean upsertChampionBuilds(List<Build> builds) {
-        if (builds == null || builds.isEmpty()) return false;
-        List<WriteModel<Document>> operations = new ArrayList<>(builds.size());
-        for (Build build : builds) if (build != null && build.filter() != null) {
-            Document update = standardBuildUpdate(build);
-            operations.add(new UpdateOneModel<>(Filters.eq("_id", build.filter().toKey()), update,
-                    new UpdateOptions().upsert(true)));
+    public static boolean upsertChampionBuild(ChampionBuildSnapshot snapshot) {
+        if (snapshot == null) {
+            return false;
         }
-        if (!operations.isEmpty()) bulkWrite(builds(), operations);
+        Document document = standardBuildDocument(snapshot);
+        replace(builds(), document);
         return true;
     }
 
@@ -3105,11 +2997,42 @@ public final class MongoDB {
         return true;
     }
 
-    public static com.safjnest.lol.model.statistics.ChampionStatsDocument findChampionStatsDocument(com.safjnest.lol.model.statistics.shared.ChampionStatsScope scope) {
+    public static long findChampionStatsLastUpdate(ChampionStatsScope scope) {
+        Document document = championStats().find(Filters.eq("_id", scope.toKey()))
+            .projection(Projections.include("ready", "updatedAt")).first();
+        if (document == null)
+            return 0;
+        long updatedAt = number(document, "updatedAt");
+        if (!Boolean.TRUE.equals(document.get("ready")) || updatedAt <= 0)
+            throw invalidChampionAggregate("stats", scope.toKey(), "Stats document is incomplete");
+        return updatedAt;
+    }
+
+    public static Set<String> findFreshChampionStatsKeys(List<Filter> filters, long cutoff) {
+        List<String> keys = new ArrayList<>(filters.size());
+        for (Filter filter : filters)
+            keys.add(ChampionStatsScope.from(filter).toKey());
+        Set<String> result = new HashSet<>();
+        for (Document document : championStats().find(Filters.and(Filters.in("_id", keys),
+                Filters.eq("ready", true), Filters.gt("updatedAt", cutoff))).projection(Projections.include("_id"))) {
+            result.add(document.getString("_id"));
+        }
+        return result;
+    }
+
+    public static ChampionStatsDocument findChampionStatsDocument(ChampionStatsScope scope) {
+        return findChampionStatsDocument(scope, false);
+    }
+
+    public static ChampionStatsDocument findChampionStatsDocument(ChampionStatsScope scope, boolean strict) {
         if (scope == null) return null;
-        Document doc = championStats().find(Filters.eq("_id", scope.toKey())).first();
-        if (doc == null) return null;
-        return readStructured(doc, com.safjnest.lol.model.statistics.ChampionStatsDocument.class);
+        Document document = championStats().find(Filters.eq("_id", scope.toKey())).first();
+        if (document == null)
+            return null;
+        ChampionStatsDocument stats = readStructured(document, ChampionStatsDocument.class);
+        if (strict && (stats == null || !scope.equals(stats.scope) || !(document.get("champions") instanceof Map<?, ?>)))
+            throw invalidChampionAggregate("stats", scope.toKey(), "Invalid stats payload");
+        return stats;
     }
 
     public static void upsertChampionIndexables(String patch, List<ChampionIndexable> values) {
@@ -3160,7 +3083,6 @@ public final class MongoDB {
                 case "com.safjnest.lol.model.match.Match" -> readMatch(record);
                 case "com.safjnest.lol.model.match.MatchResult" -> readMatchResult(record);
                 case "com.safjnest.lol.model.statistics.ProfileStatistics" -> readProfileStatistics(QueryRecordParser.toDocument(record));
-                case "com.safjnest.lol.model.Build" -> readBuild(QueryRecordParser.toDocument(record));
                 default -> readStructured(QueryRecordParser.toDocument(record), type);
             };
             return type.cast(value);
@@ -3580,7 +3502,7 @@ public final class MongoDB {
         byte[] decoded = data.getBytes(StandardCharsets.UTF_8);
         if (decoded.length != size) throw new IllegalStateException("Match event size mismatch id=" + document.get("_id"));
         if (!sha256(decoded).equals(document.getString("checksum"))) throw new IllegalStateException("Match event checksum mismatch id=" + document.get("_id"));
-        return new String(decoded, StandardCharsets.UTF_8);
+        return data;
     }
 
     private static byte[] eventJson(Map<String, Object> events) {
@@ -3927,21 +3849,6 @@ public final class MongoDB {
         return result;
     }
 
-    private static List<Filter> readFilters(MongoCollection<Document> collection, boolean generic) {
-        Map<String, Filter> result = new LinkedHashMap<>();
-        for (Document document : collection.find().projection(Projections.include("filterKey"))) {
-            String key = document.getString("filterKey");
-            if (key == null) continue;
-            try {
-                Filter filter = generic ? Filter.fromGenericKey(key) : Filter.fromKey(key);
-                result.putIfAbsent(key, filter);
-            } catch (RuntimeException ignored) {
-                // Invalid historical filters are ignored; they are reported by migration verification.
-            }
-        }
-        return new ArrayList<>(result.values());
-    }
-
     private static void readProfileRefreshFilters(
             MongoCollection<Document> collection,
             String puuid,
@@ -4115,16 +4022,6 @@ public final class MongoDB {
         return readStructured(values, ProfileRecord.class);
     }
 
-    private static Build readBuild(Document document) {
-        if (!(document.get("build") instanceof Map<?, ?> value)) return null;
-        Map<String, Object> standard = new LinkedHashMap<>();
-        for (var entry : value.entrySet()) {
-            if (!(entry.getKey() instanceof String key)) return null;
-            if (!"arena".equals(key)) standard.put(key, entry.getValue());
-        }
-        return readStructured(standard, Build.class);
-    }
-
     private static <T> T readStructured(Object value, Class<T> type) {
         return JsonCodec.fromDocument(value, type);
     }
@@ -4155,18 +4052,57 @@ public final class MongoDB {
         return Updates.combine(updates);
     }
 
-    private static Document standardBuildUpdate(Build build) {
-        if (build.arena() != null) throw new IllegalArgumentException("Arena requires its dedicated build.arena write path");
-        Document payload = JsonCodec.toDocument(build);
-        Document fields = new Document("games", build.games())
-                .append("winrate", build.winrate())
-                .append("buildVersion", CHAMPION_BUILD_GENERATION_VERSION)
-                .append("lastUpdate", System.currentTimeMillis());
-        for (String field : CHAMPION_STANDARD_BUILD_FIELDS) fields.put("build." + field, payload.get(field));
-        Document update = new Document("$set", fields)
-            .append("$setOnInsert", new Document("filterKey", build.filter().toKey()));
-        requireChampionBuildSize(update);
-        return update;
+    static Document standardBuildDocument(ChampionBuildSnapshot snapshot) {
+        Filter filter = snapshot.filter();
+        if (filter.queue() == GameQueueType.CHERRY) {
+            throw new IllegalArgumentException("Arena requires its dedicated build.arena write path");
+        }
+        String key = filter.toKey();
+        List<Document> variants = new ArrayList<>(snapshot.builds().size());
+        for (Build variant : snapshot.builds()) {
+            variants.add(JsonCodec.toDocument(variant));
+        }
+        Document document = new Document("_id", key)
+            .append("lastUpdate", System.currentTimeMillis())
+            .append("builds", variants)
+            .append("defaultBuildId", snapshot.defaultBuildId())
+            .append("bestAdjustedWinrateBuildId", snapshot.bestAdjustedWinrateBuildId());
+        requireChampionBuildSize(document);
+        return document;
+    }
+
+    static ChampionBuildSnapshot readChampionBuildSnapshot(Filter filter, Document document) {
+        if (document == null) {
+            return null;
+        }
+        championBuildUpdatedAt(filter, document);
+        String key = filter.toKey();
+        if (!(document.get("builds") instanceof List<?> rows)) {
+            throw invalidChampionAggregate("build", key, "Missing build variants");
+        }
+        List<Build> variants = new ArrayList<>(rows.size());
+        for (Object row : rows) {
+            Build variant = readStructured(row, Build.class);
+            if (!isStandardChampionBuild(variant) || variant.filter() == null
+                    || variant.filter().rankBehavior() == null || !key.equals(variant.filter().toKey())) {
+                throw invalidChampionAggregate("build", key, "Invalid build variant payload");
+            }
+            variants.add(variant);
+        }
+        try {
+            return new ChampionBuildSnapshot(filter, variants, document.getString("defaultBuildId"),
+                document.getString("bestAdjustedWinrateBuildId"));
+        } catch (IllegalArgumentException | ClassCastException | NullPointerException failure) {
+            throw invalidChampionAggregate("build", key, "Invalid build variant selection");
+        }
+    }
+
+    private static boolean isStandardChampionBuild(Build build) {
+        return build != null && build.coreBuilds() != null && build.coreItems() != null
+            && build.starterOptions() != null && build.bootOptions() != null
+            && build.supportItemOptions() != null && build.itemSlots() != null
+            && build.runeOptions() != null && build.summonerSpellOptions() != null
+            && build.skillOrders() != null && build.prismaticOptions() != null && build.augmentOptions() != null;
     }
 
     private static void requireArenaBuildFilter(Filter filter) {

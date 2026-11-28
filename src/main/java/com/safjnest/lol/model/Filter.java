@@ -5,6 +5,7 @@ import no.stelar7.api.r4j.basic.constants.types.lol.GameQueueType;
 import no.stelar7.api.r4j.basic.constants.types.lol.LaneType;
 import no.stelar7.api.r4j.basic.constants.types.lol.TierType;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
 import com.safjnest.lol.utils.FilterCodec;
 import com.safjnest.utils.ParseUtils;
 import com.safjnest.lol.utils.PatchUtils;
@@ -31,6 +32,11 @@ public class Filter {
             this.timeStart = period[0];
             this.timeEnd = period[1];
         }
+    }
+
+    @JsonCreator
+    private static Filter restore() {
+        return new Filter(false);
     }
 
     public static Filter championBuild(int champion, String patch, GameQueueType queue) {

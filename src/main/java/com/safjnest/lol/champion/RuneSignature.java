@@ -4,10 +4,8 @@ import com.safjnest.utils.ParseUtils;
 import com.safjnest.lol.utils.BuildUtils;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
-
-import org.json.JSONArray;
-import org.json.JSONObject;
 
 public record RuneSignature(
         int primaryTree,
@@ -18,27 +16,23 @@ public record RuneSignature(
         List<Integer> statShards
 ) {
 
-    public static RuneSignature from(JSONObject runesJson) {
-        JSONArray primary = runesJson.optJSONArray("primary");
-        JSONArray secondary = runesJson.optJSONArray("secondary");
-        JSONArray stats = runesJson.optJSONArray("stats");
-
-        if (primary == null || primary.length() < 2 || secondary == null) return null;
-
-        List<Integer> statList = new ArrayList<>();
-        if (stats != null) {
-            for (int i = 0; i < stats.length(); i++)
-                statList.add(stats.optInt(i, 0));
+    static RuneSignature from(List<Integer> primary, List<Integer> secondary, List<Integer> storedShards) {
+        if (primary.size() < 2) {
+            return null;
         }
 
-        return new RuneSignature(
-                primary.optInt(0, 0),
-                primary.optInt(1, 0),
-                BuildUtils.extractSorted(primary, 2),
-                secondary.optInt(0, 0),
-                BuildUtils.extractSorted(secondary, 1),
-                List.copyOf(statList)
-        );
+        // Match documents store Defense, Flex, Offense.
+        List<Integer> statShards = List.copyOf(storedShards.reversed());
+        return new RuneSignature(primary.get(0), primary.get(1), sortedRunes(primary, 2),
+            secondary.isEmpty() ? 0 : secondary.get(0), sortedRunes(secondary, 1), statShards);
+    }
+
+    private static List<Integer> sortedRunes(List<Integer> ids, int start) {
+        if (ids.size() <= start)
+            return List.of();
+        List<Integer> result = new ArrayList<>(ids.subList(start, ids.size()));
+        Collections.sort(result);
+        return result;
     }
 
     public String toKey() {

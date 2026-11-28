@@ -58,7 +58,10 @@ services:
     username: beebot
     password: "credential:mariadb-password"
 
-  mongo: "credential:mongodb-uri"
+  mongo:
+    uri: "credential:mongodb-uri"
+    league_collection: beebot_test
+    league_test_collection: beebot_test
   riot:
     key: "credential:riot-key"
 

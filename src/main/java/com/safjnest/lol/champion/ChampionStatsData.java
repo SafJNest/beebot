@@ -52,7 +52,6 @@ public final class ChampionStatsData {
 
     public record RawMatch(String matchId, MatchMeta metadata, List<RawParticipant> participants) {}
 
-    public record RawMatchRead(RawMatch match, long matchReadNanos, long eventReadNanos, long materializeNanos) {}
 
     public record TrendParticipant(int champion, LaneType lane, boolean win) {}
 

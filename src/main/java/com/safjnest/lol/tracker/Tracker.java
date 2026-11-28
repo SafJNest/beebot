@@ -45,6 +45,7 @@ import no.stelar7.api.r4j.basic.constants.api.regions.LeagueShard;
 import no.stelar7.api.r4j.basic.constants.types.KillType;
 import no.stelar7.api.r4j.basic.constants.types.lol.GameQueueType;
 import no.stelar7.api.r4j.basic.constants.types.lol.LaneType;
+import no.stelar7.api.r4j.basic.constants.types.lol.LevelUpType;
 import no.stelar7.api.r4j.basic.constants.types.lol.MatchlistMatchType;
 import no.stelar7.api.r4j.basic.constants.types.lol.TierDivisionType;
 import no.stelar7.api.r4j.pojo.lol.league.LeagueEntry;
@@ -594,7 +595,13 @@ public class Tracker {
                 if (participant.getPlayerAugment3() != 0) augmentList += "," + participant.getPlayerAugment3();
                 if (participant.getPlayerAugment4() != 0) augmentList += "," + participant.getPlayerAugment4();
 
-                List<String> prismatics = List.of(itemsIds.split(",")).stream().filter(ItemUtils::isPrismatic).collect(Collectors.toList());
+                List<String> prismatics = new ArrayList<>();
+                for (String item : itemsIds.split(",")) {
+                    int itemId = Integer.parseInt(item);
+                    if (ItemUtils.isArenaPrismatic(itemId, items.get(itemId))) {
+                        prismatics.add(item);
+                    }
+                }
                 if (!prismatics.isEmpty()) {
                     matchData.get(participant.getPuuid()).put("prismatics", String.join(",", prismatics));
                 }
@@ -737,12 +744,16 @@ public class Tracker {
                             break;
                         }
                         case SKILL_LEVEL_UP: {
+                            LevelUpType levelUpType = event.getLevelUpType();
                             JSONObject skillEvent = createTimelineEvent(event);
                             skillEvent.put("participant", event.getParticipantId());
                             skillEvent.put("skill_slot", event.getSkillSlot());
+                            if (levelUpType != null) {
+                                skillEvent.put("level_up_type", levelUpType.name());
+                            }
                             skillEvents.put(skillEvent);
 
-                            if (matchData.get(participantId) == null) break;
+                            if (levelUpType == LevelUpType.EVOLVE || matchData.get(participantId) == null) break;
                             String skillList = matchData.get(participantId).getOrDefault("skill_order", "");
                             if (skillList.isEmpty()) skillList = event.getSkillSlot() + "";
                             else skillList += "," + event.getSkillSlot();

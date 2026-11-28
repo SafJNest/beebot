@@ -3,17 +3,20 @@ package com.safjnest.lol.arena;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
-import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
 import com.safjnest.lol.arena.ParsedArenaGame.Augment;
 import com.safjnest.lol.model.Build.Kind;
 import com.safjnest.lol.model.ArenaBuildData;
-import com.safjnest.lol.model.match.Match;
-import com.safjnest.lol.model.match.Participant;
+import com.safjnest.lol.champion.ChampionBuildProvider;
+import com.safjnest.lol.champion.ChampionStatsProvider;
+import com.safjnest.lol.utils.ChampionBuildTimelineUtils;
+import com.safjnest.lol.utils.ChampionBuildTimelineUtils.ItemEvent;
+import com.safjnest.lol.utils.ChampionBuildTimelineUtils.SkillEvents;
+import it.unimi.dsi.fastutil.ints.Int2LongLinkedOpenHashMap;
+import org.bson.Document;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -21,82 +24,100 @@ public final class ArenaGameParser {
 
     private static final Set<String> ITEM_EVENTS = Set.of(
         "ITEM_PURCHASED", "ITEM_SOLD", "ITEM_UNDO", "ITEM_DESTROYED");
+    private static final List<String> INVENTORY_SLOTS = List.of("item0", "item1", "item2", "item3", "item4", "item5");
+    private static final long UNKNOWN_TIME = -1;
 
     private ArenaGameParser() {}
 
-    public static ParsedArenaGame parse(Match match, Participant participant, ArenaItemCatalog catalog) {
-        if (match == null || participant == null || catalog == null)
-            throw new IllegalArgumentException("Match, participant and catalog are required");
+    public static ParsedArenaGame parse(String patch, JSONObject timeline, Document participant, ArenaItemCatalog catalog) {
+        int participantId = participant.getInteger("id", 0);
+        String puuid = participant.getString("puuid");
+        List<Event> events = readEvents(timeline, participantId, puuid);
+        Int2LongLinkedOpenHashMap items = new Int2LongLinkedOpenHashMap(6);
+        Int2LongLinkedOpenHashMap boots = new Int2LongLinkedOpenHashMap(2);
+        Int2LongLinkedOpenHashMap prismatics = new Int2LongLinkedOpenHashMap(4);
 
-        Object timeline = match.events != null ? match.events : match.eventData;
-        List<Event> events = readEvents(timeline, participant);
-        List<Event> acquisitions = acquisitions(events);
-        LinkedHashSet<Integer> prismatics = new LinkedHashSet<>();
-        LinkedHashSet<Integer> boots = new LinkedHashSet<>();
-        List<Integer> buildItems = new ArrayList<>();
-        Set<Integer> seenBuildItems = new HashSet<>();
-
-        for (Event event : acquisitions) {
+        for (Event event : acquisitions(events)) {
             int id = event.acquiredId();
-            Kind kind = catalog.kind(match.patch, id);
-            if (kind == Kind.PRISMATIC) prismatics.add(id);
-            else if (kind == Kind.BOOTS) boots.add(id);
-            else if (id != ArenaItemCatalog.PRISMATIC_ANVIL && !catalog.isJuice(id)
-                    && seenBuildItems.add(id)) buildItems.add(id);
-        }
-
-        int[] finalItems = finalItems(participant);
-        List<Integer> finalBuild = new ArrayList<>();
-        LinkedHashSet<Integer> finalPrismatics = new LinkedHashSet<>();
-        LinkedHashSet<Integer> finalBoots = new LinkedHashSet<>();
-        for (int id : finalItems) {
-            if (id <= 0) continue;
-            Kind kind = catalog.kind(match.patch, id);
-            if (kind == Kind.PRISMATIC) {
-                finalPrismatics.add(id);
-                continue;
+            switch (catalog.kind(patch, id)) {
+                case ITEM -> items.putIfAbsent(id, event.timestamp());
+                case BOOTS -> boots.putIfAbsent(id, event.timestamp());
+                case PRISMATIC -> prismatics.putIfAbsent(id, event.timestamp());
+                case null, default -> {}
             }
-            if (kind == Kind.BOOTS) {
-                finalBoots.add(id);
-                continue;
+        }
+        int orderedItemCount = items.size();
+        int firstPrismatic = prismatics.isEmpty() ? 0 : prismatics.firstIntKey();
+        int selectedBoots = participant.getInteger("boots", 0);
+        int finalBoots = 0;
+        boolean multipleFinalBoots = false;
+        List<Integer> fallbackBuild = orderedItemCount == 0 ? new ArrayList<>(6) : List.of();
+
+        for (String slot : INVENTORY_SLOTS) {
+            int id = participant.getInteger(slot, 0);
+            switch (catalog.kind(patch, id)) {
+                case ITEM -> {
+                    items.putIfAbsent(id, UNKNOWN_TIME);
+                    if (orderedItemCount == 0) {
+                        fallbackBuild.add(id);
+                    }
+                }
+                case BOOTS -> {
+                    multipleFinalBoots |= finalBoots != 0 && finalBoots != id;
+                    finalBoots = id;
+                }
+                case PRISMATIC -> prismatics.putIfAbsent(id, UNKNOWN_TIME);
+                case null, default -> {}
             }
-            if (id != ArenaItemCatalog.PRISMATIC_ANVIL && !catalog.isJuice(id)) finalBuild.add(id);
         }
 
-        Integer firstPrismatic = prismatics.isEmpty() ? null : prismatics.iterator().next();
-        boolean fallback = false;
-        if (firstPrismatic == null && !finalPrismatics.isEmpty()) {
-            firstPrismatic = finalPrismatics.iterator().next();
-            fallback = true;
+        if (catalog.kind(patch, selectedBoots) != Kind.BOOTS) {
+            selectedBoots = finalBoots != 0 && !multipleFinalBoots ? finalBoots
+                : boots.size() == 1 ? boots.firstIntKey() : 0;
         }
-        prismatics.addAll(finalPrismatics);
-
-        Integer boot = catalog.kind(match.patch, participant.boots) == Kind.BOOTS ? participant.boots : null;
-        if (boot == null && finalBoots.size() == 1) boot = finalBoots.iterator().next();
-        if (boot == null && boots.size() == 1) boot = boots.iterator().next();
-
-        List<Augment> augments = new ArrayList<>();
-        if (participant.augments != null) for (int index = 0;
-                index < Math.min(participant.augments.size(), ArenaBuildData.MAX_AUGMENTS); index++) {
-            Integer id = participant.augments.get(index);
-            if (id != null && id > 0) augments.add(new Augment(id, index + 1));
+        boolean prismaticFallback = firstPrismatic == 0 && !prismatics.isEmpty();
+        if (prismaticFallback) {
+            firstPrismatic = prismatics.firstIntKey();
+        }
+        ItemEvent boot = selectedBoots == 0 ? null
+            : new ItemEvent(selectedBoots, boots.getOrDefault(selectedBoots, UNKNOWN_TIME));
+        ItemEvent prismatic = firstPrismatic == 0 ? null
+            : new ItemEvent(firstPrismatic, prismatics.get(firstPrismatic));
+        if (orderedItemCount == 0) {
+            fallbackBuild.sort(Integer::compareTo);
         }
 
-        List<Integer> buildFallback = List.copyOf(finalBuild);
-        List<Integer> timelineBuild = List.copyOf(buildItems);
-        return new ParsedArenaGame(participant.win || participant.subTeamPlacement >= 3,
-            boot, firstPrismatic, fallback, List.copyOf(prismatics), timelineBuild, augments,
-            !events.isEmpty(), buildFallback);
+        List<Augment> augments = new ArrayList<>(ArenaBuildData.MAX_AUGMENTS);
+        List<Integer> storedAugments = participant.getList("augments", Integer.class, List.of());
+        for (int index = 0; index < Math.min(storedAugments.size(), ArenaBuildData.MAX_AUGMENTS); index++) {
+            Integer id = storedAugments.get(index);
+            if (id != null && id > 0) {
+                augments.add(new Augment(id, index + 1));
+            }
+        }
+        SkillEvents skills = ChampionBuildTimelineUtils.skillEvents(timeline, puuid);
+        List<Integer> fallbackSkills = skills.upgrades().isEmpty() ? ChampionBuildProvider.skillOrder(participant) : List.of();
+
+        return new ParsedArenaGame(ChampionStatsProvider.win(participant), participant.getInteger("subTeamPlacement", 0),
+            boot, prismatic, prismaticFallback, itemValues(prismatics), itemValues(items), orderedItemCount,
+            fallbackBuild, augments, !events.isEmpty(), fallbackSkills, skills);
+    }
+
+    private static List<ItemEvent> itemValues(Int2LongLinkedOpenHashMap source) {
+        List<ItemEvent> events = new ArrayList<>(source.size());
+        for (var entry : source.int2LongEntrySet()) {
+            events.add(new ItemEvent(entry.getIntKey(), entry.getLongValue()));
+        }
+        return events;
     }
 
     // ============================================================================
 
-    private static List<Event> readEvents(Object raw, Participant participant) {
-        JSONObject root = json(raw);
+    private static List<Event> readEvents(JSONObject root, int participantId, String puuid) {
         JSONArray items = array(root, "item_events");
         if (items == null) return List.of();
-        JSONObject references = object(root, "participants");
-        if (!validReferences(references, participant)) return List.of();
+        JSONObject references = root.optJSONObject("participants");
+        if (!validReferences(references, participantId, puuid)) return List.of();
 
         List<Event> events = new ArrayList<>();
         Set<EventIdentity> seen = new HashSet<>();
@@ -105,7 +126,7 @@ public final class ArenaGameParser {
             if (source == null) continue;
             Integer actor = integer(source.opt("participant"));
             Integer actorId = integer(source.opt("participantId"));
-            if (actor == null || actor <= 0 || actor != participant.id
+            if (actor == null || actor <= 0 || actor != participantId
                     || source.has("participantId") && !Objects.equals(actor, actorId)) continue;
 
             String type = source.optString("event");
@@ -138,18 +159,14 @@ public final class ArenaGameParser {
         return result;
     }
 
-    private static boolean validReferences(JSONObject references, Participant participant) {
+    private static boolean validReferences(JSONObject references, int participantId, String puuid) {
         if (references == null) return true;
-        if (participant.id <= 0 || participant.puuid == null || participant.puuid.isBlank()
-                || !participant.puuid.equals(references.optString(String.valueOf(participant.id)))) return false;
-        for (String key : references.keySet()) if (!key.equals(String.valueOf(participant.id))
-                && !"0".equals(key) && participant.puuid.equals(references.optString(key))) return false;
+        String id = Integer.toString(participantId);
+        if (participantId <= 0 || puuid == null || puuid.isBlank()
+                || !puuid.equals(references.optString(id))) return false;
+        for (String key : references.keySet()) if (!key.equals(id)
+                && !"0".equals(key) && puuid.equals(references.optString(key))) return false;
         return true;
-    }
-
-    private static int[] finalItems(Participant participant) {
-        return new int[]{participant.item0, participant.item1, participant.item2,
-            participant.item3, participant.item4, participant.item5};
     }
 
     private static Integer integer(Object raw) {
@@ -163,22 +180,6 @@ public final class ArenaGameParser {
         if (!(raw instanceof Number number)) return null;
         long value = number.longValue();
         return value >= 0 && number.doubleValue() == value ? value : null;
-    }
-
-    private static JSONObject json(Object raw) {
-        if (raw instanceof JSONObject object) return object;
-        if (raw instanceof Map<?, ?> map) return new JSONObject(map);
-        if (raw instanceof String text) try { return new JSONObject(text); }
-        catch (RuntimeException ignored) { return null; }
-        return null;
-    }
-
-    private static JSONObject object(JSONObject root, String key) {
-        if (root == null) return null;
-        Object value = root.opt(key);
-        if (value instanceof JSONObject object) return object;
-        if (value instanceof Map<?, ?> map) return new JSONObject(map);
-        return null;
     }
 
     private static JSONArray array(JSONObject root, String key) {

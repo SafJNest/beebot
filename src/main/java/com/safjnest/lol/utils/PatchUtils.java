@@ -19,22 +19,29 @@ public class PatchUtils {
 
 	private static final List<String> FALLBACK_PATCHES = List.of("16.18", "16.17", "16.16");
 
-	private static final List<String> patches = fetchPatches();
+	private static final class PatchCatalog {
+		private static final List<String> patches = fetchPatches();
+	}
 
 	public static String getPatch() {
+		List<String> patches = getPatches();
 		return patches.isEmpty() ? null : patches.get(0);
 	}
 
 	public static String getPreviousPatch() {
+		List<String> patches = getPatches();
 		return patches.size() > 1 ? patches.get(1) : null;
 	}
 
 	public static List<String> getPatches() {
-		return patches;
+		return PatchCatalog.patches;
 	}
 
 	public static List<String> getRecentPatches(int count) {
-		if (count <= 0 || patches.isEmpty()) return List.of();
+		if (count <= 0) {
+			return List.of();
+		}
+		List<String> patches = getPatches();
 		List<String> result = new ArrayList<>();
 		for (String patch : patches) {
 			if (patch == null || patch.isBlank() || result.contains(patch)) continue;
@@ -46,6 +53,7 @@ public class PatchUtils {
 	}
 
 	public static OptionData getAsOptions() {
+		List<String> patches = getPatches();
 		List<Choice> choices = new ArrayList<>();
 		for (String version : patches.subList(0, Math.min(3, patches.size()))) {
 			String patch = patchMajor(version);

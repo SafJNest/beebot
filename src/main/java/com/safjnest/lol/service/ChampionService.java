@@ -1,16 +1,26 @@
 package com.safjnest.lol.service;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.Objects;
-import java.util.function.BiConsumer;
-import java.util.function.BiPredicate;
-import java.util.function.Consumer;
+import java.util.Set;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
+import com.mongodb.MongoException;
+import com.safjnest.exception.Exception;
+import com.safjnest.lol.queue.scheduler.ComputeScheduler.ChampionWork;
 
 import com.safjnest.database.nosql.MongoDB;
 import com.safjnest.database.redis.RedisClient;
@@ -18,8 +28,9 @@ import com.safjnest.database.redis.RedisKey;
 import com.safjnest.lol.arena.ArenaItemCatalog;
 import com.safjnest.lol.champion.ChampionBuildProvider;
 import com.safjnest.lol.model.ApiResult;
-import com.safjnest.lol.model.ArenaBuildData;
 import com.safjnest.lol.model.Build;
+import com.safjnest.lol.model.ArenaBuildData;
+import com.safjnest.lol.model.ChampionBuildSnapshot;
 import com.safjnest.lol.model.ChampionStatistics;
 import com.safjnest.lol.model.ChampionTierList;
 import com.safjnest.lol.model.ChampionTierSource;
@@ -27,7 +38,6 @@ import com.safjnest.lol.model.ChampionView;
 import com.safjnest.lol.model.Filter;
 import com.safjnest.lol.model.ChampionIndexable;
 import com.safjnest.lol.model.ResponseMetadata;
-import com.safjnest.lol.model.match.Match;
 import com.safjnest.lol.model.statistics.ChampionStatsDocument;
 import com.safjnest.lol.model.statistics.shared.ChampionLeafStats;
 import com.safjnest.lol.model.statistics.shared.ChampionNode;
@@ -40,9 +50,7 @@ import com.safjnest.lol.utils.GameQueueTypeUtils;
 import com.safjnest.lol.utils.LaneTypeUtils;
 import com.safjnest.lol.utils.LeagueShardUtils;
 import com.safjnest.lol.utils.PatchUtils;
-import com.safjnest.lol.utils.MatchupTimelineUtils;
 import com.safjnest.lol.utils.TierDivisionUtils;
-import com.safjnest.status.log.BotLogger;
 import com.safjnest.utils.TimeConstant;
 
 import no.stelar7.api.r4j.basic.constants.api.regions.LeagueShard;
@@ -53,20 +61,35 @@ import no.stelar7.api.r4j.pojo.lol.staticdata.champion.StaticChampion;
 
 public class ChampionService {
 
-    private final BiConsumer<Filter, Consumer<List<Match>>> arenaSource;
-    private final BiPredicate<Filter, ArenaBuildData> arenaWriter;
-
-    public ChampionService() {
-        this(ChampionBuildProvider::forEachArenaBatch, MongoDB::upsertChampionArena);
-    }
-
-    ChampionService(BiConsumer<Filter, Consumer<List<Match>>> arenaSource,
-            BiPredicate<Filter, ArenaBuildData> arenaWriter) {
-        this.arenaSource = Objects.requireNonNull(arenaSource);
-        this.arenaWriter = Objects.requireNonNull(arenaWriter);
-    }
+    private static final Logger LOG = LoggerFactory.getLogger(ChampionService.class);
+    private static final Cache<String, List<ChampionIndexable>> INDEXABLES = Caffeine.newBuilder()
+        .maximumSize(2).expireAfterWrite(Duration.ofMinutes(5)).build();
 
     public record MatrixRefreshResult(int combinations, int skipped, int generated, int empty, int persistedChampions) {}
+    public record ChampionData(ChampionStatistics stats, ChampionBuildSnapshot snapshot, Build arenaBuild) {
+        public Build build() {
+            return snapshot == null ? arenaBuild : snapshot.defaultBuild();
+        }
+
+        boolean hasBuild() {
+            return snapshot != null || arenaBuild != null;
+        }
+    }
+
+    private record Availability(long statsUpdatedAt, long buildUpdatedAt) {
+        boolean missingStats() { return statsUpdatedAt == 0; }
+        boolean missingBuild() { return buildUpdatedAt == 0; }
+        boolean missing() { return missingStats() || missingBuild(); }
+        long lastUpdate() { return oldest(statsUpdatedAt, buildUpdatedAt); }
+    }
+
+    private record CachedPage(Availability availability, ChampionView page) {}
+
+    public static Filter dataFilter(Filter filter) {
+        return Filter.championBuild(filter.champion(), filter.patch(), filter.queue())
+            .setRank(filter.rank()).setRankBehavior(filter.rankBehavior()).setRegion(filter.region())
+            .setLane(GameQueueTypeUtils.hasLane(filter.queue()) ? filter.lane() : null);
+    }
 
     public static Filter arenaFilterSnapshot(Filter filter) {
         if (filter == null || filter.champion() <= 0 || filter.queue() != GameQueueType.CHERRY
@@ -87,6 +110,21 @@ public class ChampionService {
         return refreshArenaInternal(filter, catalog, Objects.requireNonNull(job, "Arena job required"));
     }
 
+    public Filter resolveFilter(int champion, String patch, TierType rank, LeagueShard region,
+            GameQueueType queue, LaneType role) {
+        String selectedPatch = patch == null ? PatchUtils.getPatch() : PatchUtils.patchMajor(patch);
+        GameQueueType selectedQueue = queue == null ? GameQueueType.TEAM_BUILDER_RANKED_SOLO : queue;
+        Filter filter = Filter.championBuild(champion, selectedPatch, selectedQueue).setRank(rank).setRegion(region);
+        if (GameQueueTypeUtils.hasLane(selectedQueue)) {
+            try {
+                filter.setLane(role == null ? primaryRole(champion) : role);
+            } catch (MongoException failure) {
+                throw lookupFailure(filter, failure);
+            }
+        }
+        return filter;
+    }
+
     public ApiResult<ChampionView> get(
         String championValue,
         String patch,
@@ -97,75 +135,56 @@ public class ChampionService {
     ) {
         StaticChampion champion = ChampionUtils.findChampion(championValue);
         if (champion == null) return ApiResult.notFound();
-        GameQueueType selectedQueue = queue != null ? queue : GameQueueType.TEAM_BUILDER_RANKED_SOLO;
-        Filter filter = new Filter().setChampion(champion.getId()).setRank(rank).setRegion(region)
-            .setQueue(selectedQueue).setLane(role);
-        if (patch != null) filter.setPatch(patch);
-        String key = RedisKey.CHAMPION_PAGE.of(filter.champion(), filter.pageKey());
-        ChampionStatsScope scope = ChampionStatsScope.from(filter);
-        ChampionStatsDocument statsDoc = MongoDB.findChampionStatsDocument(scope);
-        long statsLastUpdate = statsDoc == null ? 0 : statsDoc.updatedAt;
-        long buildLastUpdate = MongoDB.findChampionBuildLastUpdate(filter);
-        if (isStale(statsLastUpdate) || isStale(buildLastUpdate)) {
-            CacheInvalidationService.clearRedis(RedisKey.CHAMPION_PAGE, filter.champion(), filter.pageKey());
-            CacheInvalidationService.clearRedis(RedisKey.CHAMPION_STATS, filter.champion(), filter.genericKey());
+        Filter filter = resolveFilter(champion.getId(), patch, rank, region, queue, role);
+        Availability availability = availability(filter);
+        if (availability.missing()) {
+            return pending(filter, availability);
         }
-        ChampionView cached;
-        try {
-            cached = RedisClient.get(key, ChampionView.class);
-        } catch (RuntimeException exception) {
-            CacheInvalidationService.clearRedis(RedisKey.CHAMPION_PAGE, filter.champion(), filter.pageKey());
-            cached = null;
-        }
-        if (cached != null) {
-            ChampionView page = new ChampionView(
-                cached.champion(),
-                MatchupRankingAnalyzer.rank(cached.stats()),
-                cached.build(),
-                ResponseMetadata.of(oldest(statsLastUpdate, buildLastUpdate), false, filter)
-            );
-            return ApiResult.ready(page, page.metadata());
-        }
-        return compose(champion, filter, statsLastUpdate, buildLastUpdate);
-    }
 
-    public ChampionStatistics getStatistics(Filter filter) {
-        return getStatistics(filter, true);
-    }
-
-    public ChampionStatistics getStatistics(Filter filter, boolean allowCompute) {
-        if (filter == null) return null;
-        String key = RedisKey.CHAMPION_STATS.of(filter.champion(), filter.genericKey());
-        ChampionStatistics stats;
-        try {
-            stats = RedisClient.get(key, ChampionStatistics.class);
-        } catch (RuntimeException exception) {
-            CacheInvalidationService.clearRedis(RedisKey.CHAMPION_STATS, filter.champion(), filter.genericKey());
-            stats = null;
-        }
-        if (stats != null) return stats;
-        try {
-            ChampionStatsScope scope = ChampionStatsScope.from(filter);
-            ChampionStatsDocument doc = MongoDB.findChampionStatsDocument(scope);
-            if (doc != null && doc.ready) {
-                ChampionNode node = doc.champions.get(filter.champion());
-                if (node != null) {
-                    ChampionLeafStats leaf = node.lanes.get(filter.lane() == null ? null : filter.lane().name());
-                    if (leaf == null && filter.lane() == null) leaf = node.overall();
-                    if (leaf != null && leaf.games > 0) {
-                        stats = ChampionAnalyzer.toChampionStatistics(filter, doc, node, leaf);
-                        RedisClient.set(RedisKey.CHAMPION_STATS, stats, filter.champion(), filter.genericKey());
-                        return stats;
-                    }
-                }
-                stats = ChampionAnalyzer.empty(filter);
-                RedisClient.set(RedisKey.CHAMPION_STATS, stats, filter.champion(), filter.genericKey());
-                return stats;
+        boolean statsStale = isStale(availability.statsUpdatedAt());
+        boolean buildStale = isStale(availability.buildUpdatedAt());
+        if (statsStale || buildStale) {
+            try {
+                schedule(filter, statsStale, buildStale);
+            } catch (Exception failure) {
+                LOG.warn("[ChampionRefresh] filter=" + filter.toKey() + " reason=" + failure.getMessage());
             }
-        } catch (RuntimeException ignored) {}
-        if (!allowCompute || filter.patch() == null || filter.queue() == null) return null;
-        ChampionAnalyzer.recomputeScope(ChampionStatsScope.from(filter));
-        return getStatistics(filter, false);
+        }
+
+        String key = RedisKey.CHAMPION_PAGE.of(filter.champion(), filter.pageKey());
+        CachedPage cached = RedisClient.get(key, CachedPage.class);
+        boolean arena = filter.queue() == GameQueueType.CHERRY;
+        ChampionView rawPage;
+        if (cached != null && availability.equals(cached.availability()) && cached.page() != null
+                && cached.page().stats() != null && (arena ? cached.page().build() != null : cached.page().builds() != null)) {
+            rawPage = cached.page();
+        } else {
+            ChampionData data = readData(filter);
+            if (data.stats() == null || !data.hasBuild()) {
+                Availability remaining = new Availability(data.stats() == null ? 0 : availability.statsUpdatedAt(),
+                    data.hasBuild() ? availability.buildUpdatedAt() : 0);
+                return pending(filter, remaining);
+            }
+            rawPage = new ChampionView(new ChampionView.Champion(champion.getId(), champion.getName(),
+                ChampionUtils.getChampionProfilePic(champion.getId())), data.stats(), data.snapshot(), data.arenaBuild());
+            RedisClient.set(RedisKey.CHAMPION_PAGE, new CachedPage(availability, rawPage), filter.champion(), filter.pageKey());
+        }
+        ChampionView page = rawPage.withStatistics(MatchupRankingAnalyzer.rank(rawPage.stats()),
+            ResponseMetadata.of(availability.lastUpdate(), statsStale || buildStale, filter));
+        return ApiResult.ready(page, page.metadata());
+    }
+
+    public CompletableFuture<ChampionData> getForDiscord(Filter filter) {
+        Filter snapshot = dataFilter(filter);
+        Availability availability = availability(snapshot);
+        if (!availability.missing())
+            return CompletableFuture.completedFuture(readRequiredData(snapshot));
+        return schedule(snapshot, availability.missingStats(), availability.missingBuild())
+            .future().thenApplyAsync(ignored -> readRequiredData(snapshot));
+    }
+
+    public boolean buildFresh(Filter filter) {
+        return !isStale(MongoDB.findChampionBuildLastUpdate(filter));
     }
 
     public Map<Integer, ChampionStatistics> getStatisticsAll(Filter filter) {
@@ -184,62 +203,42 @@ public class ChampionService {
         return result;
     }
 
-    public Build getBuild(Filter filter) {
-        return getBuild(filter, true);
-    }
-
-    public Build getBuild(Filter filter, boolean allowCompute) {
-        if (filter == null) return null;
-        if (filter.queue() != GameQueueType.CHERRY) return ChampionBuildEngine.getAggregate(filter, allowCompute);
-        Filter snapshot = arenaFilterSnapshot(filter);
-        ArenaBuildData arena = MongoDB.findChampionArena(snapshot);
-        if (arena == null && allowCompute) {
-            refreshBuild(filter);
-            arena = MongoDB.findChampionArena(snapshot);
-        }
-        return arena == null ? null : Build.fromArena(filter, arena);
-    }
-
-    public boolean hasBuild(Filter filter) {
-        return filter != null && getBuild(filter, false) != null;
-    }
-
     public List<ChampionIndexable> getIndexables() {
         String patch = PatchUtils.getPatch();
-        return patch == null ? List.of() : MongoDB.findChampionIndexables(patch);
-    }
-
-    public boolean refresh(Filter filter) {
-        if (filter == null || filter.champion() == 0) return false;
-        boolean build = refreshBuild(filter);
-        Map<Integer, ChampionStatistics> stats = refreshStatistics(filter);
-        return build && stats.containsKey(filter.champion());
-    }
-
-    public boolean refreshBuild(Filter filter) {
-        return refreshBuild(filter, null);
+        return patch == null ? List.of() : INDEXABLES.get(patch,
+            key -> List.copyOf(MongoDB.findChampionIndexables(key)));
     }
 
     public boolean refreshBuild(Filter filter, Job<?> job) {
-        if (filter == null || filter.champion() == 0) return false;
-        if (filter.queue() == GameQueueType.CHERRY) {
-            ArenaItemCatalog catalog = ArenaItemCatalog.fromItems(StaticDataService.getItems(filter.patch()));
-            return refreshArenaInternal(filter, catalog, job);
+        if (filter == null || filter.champion() == 0) {
+            return false;
         }
-        List<Build> builds = ChampionBuildEngine.recomputeAll(filter);
-        boolean refreshed = builds != null && !builds.isEmpty();
-        if (refreshed) invalidate(filter);
-        return refreshed;
-    }
 
-    public Map<Integer, ChampionStatistics> refreshStatistics(Filter filter) {
-        if (filter == null || filter.patch() == null || filter.queue() == null) return Map.of();
-        Filter statisticsFilter = statisticsFilter(filter);
-        ChampionAnalyzer.recomputeScope(ChampionStatsScope.from(statisticsFilter));
-        Map<Integer, ChampionStatistics> statistics = getStatisticsAll(statisticsFilter);
-        invalidateTierList(statisticsFilter);
-        invalidateStatisticsScope(statisticsFilter);
-        return statistics;
+        Filter snapshot = dataFilter(filter);
+        if (snapshot.queue() == GameQueueType.CHERRY) {
+            ArenaItemCatalog catalog = ArenaItemCatalog.fromItems(StaticDataService.getItems(snapshot.patch()));
+            return refreshArenaInternal(snapshot, catalog, job);
+        }
+
+        ChampionBuildEngine engine = new ChampionBuildEngine(snapshot);
+        ChampionBuildProvider provider = new ChampionBuildProvider(snapshot);
+        boolean refreshed;
+        try {
+            provider.forEachGame(job, engine::accept);
+            if (job != null) {
+                job.phase("PUBLISH_BUILD");
+            }
+
+            ChampionBuildSnapshot buildSnapshot = engine.finish();
+            BuildNaming naming = new BuildNaming(provider.loadedItems(), StaticDataService::getRuneName);
+            refreshed = MongoDB.upsertChampionBuild(naming.label(buildSnapshot));
+        } finally {
+            engine.clear();
+        }
+        if (refreshed) {
+            invalidate(snapshot);
+        }
+        return refreshed;
     }
 
     public ApiResult<ChampionTierList> getTierList(
@@ -310,35 +309,38 @@ public class ChampionService {
         ResponseMetadata metadata = ResponseMetadata.of(lastUpdate, refresh, base);
         ChampionTierList result = new ChampionTierList(ChampionTierAnalyzer.analyze(ready, sources), metadata);
         if (refresh) {
-            ComputeScheduler.enqueueChampionStatsMatrix(base.patch(), base.queue());
+            try {
+                ComputeScheduler.enqueueChampionStatsMatrix(base.patch(), base.queue());
+            } catch (Exception failure) {
+                LOG.warn("[ChampionRefresh] statsScope=" + baseScope.toKey() + " reason=" + failure.getMessage());
+            }
             return ApiResult.partial(result, metadata);
         }
         RedisClient.set(RedisKey.CHAMPION_TIER_LIST, result, base.genericKey());
         return ApiResult.ready(result, metadata);
     }
 
-    public MatrixRefreshResult refreshStatisticsMatrix(String patch, GameQueueType queue) {
-        return refreshStatisticsMatrix(patch, queue, List.of());
-    }
-
-    public MatrixRefreshResult refreshStatisticsMatrix(String patch, GameQueueType queue, List<Filter> buildFilters) {
-        return refreshStatisticsMatrix(patch, queue, buildFilters, false);
-    }
-
-    public MatrixRefreshResult refreshStatisticsMatrix(String patch, GameQueueType queue, List<Filter> buildFilters, boolean force) {
+    public MatrixRefreshResult refreshStatisticsMatrix(String patch, GameQueueType queue, List<Filter> buildFilters,
+            boolean force, Job<?> job) {
         List<Filter> combinations = matrixFilters(patch, queue);
-        Set<String> readyKeys = new HashSet<>();
-        if (!force) for (Filter filter : combinations) {
-            ChampionStatsScope scope = ChampionStatsScope.from(filter);
-            ChampionStatsDocument doc = MongoDB.findChampionStatsDocument(scope);
-            if (doc != null && doc.ready && !isStale(doc.updatedAt)) readyKeys.add(scope.toKey());
-        }
+        if (job != null)
+            job.phase("CHECK_AVAILABILITY");
+        Set<String> readyKeys = force ? Set.of()
+            : MongoDB.findFreshChampionStatsKeys(combinations, System.currentTimeMillis() - TimeConstant.WEEK);
         List<Filter> missing = missingMatrixFilters(combinations, readyKeys);
-        ChampionAnalyzer.MatrixResult result = ChampionAnalyzer.recomputeMatrixCoalesced(missing, buildFilters);
+        List<Filter> pendingBuilds = new ArrayList<>();
+        for (Filter filter : buildFilters) {
+            Filter snapshot = dataFilter(filter);
+            if (force || !buildFresh(snapshot)) {
+                pendingBuilds.add(snapshot);
+            }
+        }
+        ChampionAnalyzer.MatrixResult result = ChampionAnalyzer.recomputeMatrixCoalesced(missing, pendingBuilds, job);
         invalidateTierLists(missing);
-        for (Filter filter : missing) invalidateStatisticsScope(filter);
-        if (missing.isEmpty()) for (Filter filter : buildFilters) refreshBuild(filter);
-        for (Filter filter : buildFilters) invalidate(filter);
+        for (Filter filter : pendingBuilds) {
+            if (missing.isEmpty()) refreshBuild(filter, job);
+            else invalidate(filter);
+        }
         return new MatrixRefreshResult(combinations.size(), combinations.size() - missing.size(),
             result.filters() - result.emptyFilters(), result.emptyFilters(), result.persistedChampions());
     }
@@ -362,45 +364,49 @@ public class ChampionService {
             }
         }
         MongoDB.upsertChampionIndexables(patch, values);
-        return MongoDB.findChampionIndexables(patch);
+        List<ChampionIndexable> refreshed = List.copyOf(MongoDB.findChampionIndexables(patch));
+        INDEXABLES.put(patch, refreshed);
+        return refreshed;
     }
 
     public void refresh(String patch, Job<?> job) {
+        job.phase("PLAN_SCOPES");
         List<GameQueueType> queues = new ArrayList<>(getStatQueues(patch));
         List<Filter> builds = getBuildFilters(patch);
         builds.removeIf(filter -> !queues.contains(filter.queue()));
         for (GameQueueType queue : queues)
             job.trackItem(ComputeScheduler.championStatsMatrixKey(patch, queue));
         for (Filter filter : builds) job.trackItem(filter.toKey());
-        BotLogger.info("[refresh build]: starting patch=" + patch);
+        LOG.info("[refresh build]: starting patch=" + patch);
         job.phase("STATISTICS");
         int queueIndex = 0;
         for (GameQueueType queue : queues) {
             String key = ComputeScheduler.championStatsMatrixKey(patch, queue);
             job.currentItem(key);
-            BotLogger.info("[refresh build]: generating stats | queue " + (++queueIndex) + "/" + queues.size()
+            LOG.info("[refresh build]: generating stats | queue " + (++queueIndex) + "/" + queues.size()
                 + " (" + GameQueueTypeUtils.prettyName(queue) + ")");
-            refreshStatisticsMatrix(patch, queue, List.of(), true);
+            refreshStatisticsMatrix(patch, queue, List.of(), true, job);
             job.done(key);
         }
         job.phase("BUILDS");
         int buildIndex = 0;
         for (Filter filter : builds) {
             job.currentItem(filter.toKey());
-            BotLogger.info("[refresh build]: generating build champion " + filter.champion()
+            LOG.info("[refresh build]: generating build champion " + filter.champion()
                 + " | queue " + (queues.indexOf(filter.queue()) + 1) + "/" + queues.size()
                 + " (" + GameQueueTypeUtils.prettyName(filter.queue()) + ")"
                 + " | filter " + (++buildIndex) + "/" + builds.size());
             try {
-                if (refreshBuild(filter)) job.done(filter.toKey());
+                if (refreshBuild(filter, job))
+                    job.done(filter.toKey());
                 else job.missing(filter.toKey());
             } catch (RuntimeException exception) {
                 job.failed(filter.toKey());
-                BotLogger.warning("[refresh build]: failed champion " + filter.champion()
-                    + " | queue " + GameQueueTypeUtils.prettyName(filter.queue()) + " | " + exception.getMessage());
+                LOG.warn("[ChampionRefresh] pid={} filter={} phase={} outcome=FAILED",
+                    job.pid(), filter.toKey(), job.phase(), exception);
             }
         }
-        BotLogger.info("[refresh build]: finished patch=" + patch);
+        LOG.info("[refresh build]: finished patch=" + patch);
     }
 
     public static List<Filter> matrixFilters(String patch, GameQueueType queue) {
@@ -413,8 +419,7 @@ public class ChampionService {
         ranks.add(null);
         ranks.addAll(TierDivisionUtils.getHigherTiers(TierType.IRON));
         for (LeagueShard region : regions) for (TierType rank : ranks)
-            filters.add(new Filter().setChampion(0).setLane(null).setQueue(queue).setRank(rank)
-                .setPatch(patch).setRegion(region));
+            filters.add(Filter.championBuild(0, patch, queue).setRank(rank).setRegion(region));
         return filters;
     }
 
@@ -439,107 +444,116 @@ public class ChampionService {
 
     // ============================================================================
 
-    private static final class ArenaProgress {
-        private long total;
-        private long completed;
-        private long missing;
-        private long failed;
-
-        private void report(Job<?> job, String phase) {
-            if (job == null) return;
-            job.phase(phase + " total=" + total + " completed=" + completed
-                + " missing=" + missing + " failed=" + failed);
+    private LaneType primaryRole(int champion) {
+        // Indexables are ordered by champion, then by games descending.
+        for (ChampionIndexable entry : getIndexables()) {
+            if (entry.champion() == champion && entry.games() > 0) {
+                return entry.role();
+            }
         }
+        return null;
     }
 
     private boolean refreshArenaInternal(Filter filter, ArenaItemCatalog catalog, Job<?> job) {
-        Filter request = Filter.fromStateKey(filter.toStateKey());
-        String item = job == null ? null : job.key();
-        if (job != null) job.trackItem(item);
-        ArenaProgress progress = new ArenaProgress();
-        try {
-            Filter snapshot = arenaFilterSnapshot(filter);
-            Objects.requireNonNull(catalog, "Detached catalog for the requested patch required");
-            if (job != null) job.currentItem("champion=" + snapshot.champion() + " patch=" + snapshot.patch()
-                + " shard=" + (snapshot.region() == null ? "ALL" : snapshot.region().name()));
-            ArenaBuildData result = aggregateArena(snapshot, catalog, job, progress);
-            progress.report(job, "WRITE");
-            if (!arenaWriter.test(snapshot, result))
-                throw new IllegalStateException("Arena write was not completed");
-            progress.report(job, "DONE");
-            invalidate(request);
-            if (job != null) job.done(item);
-            return true;
-        } catch (RuntimeException | Error exception) {
-            progress.failed++;
-            progress.report(job, "FAILED");
-            if (job != null) job.failed(item);
-            throw exception;
-        }
-    }
-
-    private ArenaBuildData aggregateArena(Filter snapshot, ArenaItemCatalog catalog,
-            Job<?> job, ArenaProgress progress) {
+        Filter snapshot = arenaFilterSnapshot(filter);
         ArenaChampionAnalyzer.Accumulator accumulator = ArenaChampionAnalyzer.accumulator(
-            snapshot.champion(), snapshot.patch(), catalog);
+            snapshot.champion(), snapshot.patch(), Objects.requireNonNull(catalog, "Patch catalog required"));
         try {
-            progress.report(job, "READ");
-            arenaSource.accept(snapshot, batch -> {
-                Objects.requireNonNull(batch, "Arena batch required");
-                progress.total += batch.size();
-                for (Match match : batch) {
-                    if (!accumulator.accept(match))
-                        throw new IllegalArgumentException("Arena source match does not match the requested scope");
-                    progress.completed++;
-                    if (!MatchupTimelineUtils.hasTimeline(match.events)) progress.missing++;
+            MongoDB.forEachChampionRawMatchEventBatch(snapshot, true, job, input -> {
+                if (!accumulator.accept(input)) {
+                    throw new IllegalArgumentException("Arena match does not match the requested scope");
                 }
-                progress.report(job, "READ");
             });
-            return accumulator.finish();
+            if (job != null)
+                job.phase("PUBLISH_BUILD");
+            ArenaBuildData arena = accumulator.finish();
+            if (!MongoDB.upsertChampionArena(snapshot, BuildNaming.labelArena(arena, catalog))) {
+                throw new IllegalStateException("Arena write was not completed");
+            }
+            invalidate(snapshot);
+            return true;
         } finally {
             accumulator.clear();
         }
     }
 
-    private ApiResult<ChampionView> compose(
-        StaticChampion champion,
-        Filter filter,
-        long statsLastUpdate,
-        long buildLastUpdate
-    ) {
-        ChampionStatistics stats = getStatistics(filter, false);
-        Build build = getBuild(filter, false);
-        boolean statisticsPending = stats == null;
-        boolean buildPending = build == null;
-        if (statisticsPending || buildPending) {
-            BotLogger.info("[ChampionDataPending] champion=" + filter.champion()
-                + " lane=" + filter.lane()
-                + " queue=" + filter.queue()
-                + " rank=" + filter.rank()
-                + " rankBehavior=" + filter.rankBehavior()
-                + " patch=" + filter.patch()
-                + " region=" + filter.region()
-                + " statisticsPending=" + statisticsPending
-                + " statisticsLastUpdate=" + statsLastUpdate
-                + " buildPending=" + buildPending
-                + " buildLastUpdate=" + buildLastUpdate);
-            ComputeScheduler.startChampionData(filter, statisticsPending, buildPending);
-            return ApiResult.pending(ResponseMetadata.of(oldest(statsLastUpdate, buildLastUpdate), true, filter));
+    private static ChampionWork schedule(Filter filter, boolean stats, boolean build) {
+        ChampionWork work = ComputeScheduler.startChampionData(filter, stats, build);
+        if (!work.future().isCompletedExceptionally())
+            return work;
+        try {
+            work.future().join();
+            return work;
+        } catch (CompletionException | CancellationException failure) {
+            throw new Exception(Exception.Type.UNAVAILABLE, "champion_job_unavailable",
+                "Champion jobs " + work.jobIds() + " could not complete. See the job logs.", failure, null);
         }
-        boolean statisticsStale = isStale(statsLastUpdate);
-        boolean buildStale = isStale(buildLastUpdate);
-        boolean refresh = statisticsStale || buildStale;
-        if (refresh) ComputeScheduler.startChampionData(filter, statisticsStale, buildStale);
-        ChampionView rawPage = new ChampionView(new ChampionView.Champion(champion.getId(), champion.getName(),
-            ChampionUtils.getChampionProfilePic(champion.getId())), stats, build);
-        RedisClient.set(RedisKey.CHAMPION_PAGE, rawPage, filter.champion(), filter.pageKey());
-        ChampionView page = new ChampionView(
-            rawPage.champion(),
-            MatchupRankingAnalyzer.rank(rawPage.stats()),
-            rawPage.build(),
-            ResponseMetadata.of(oldest(statsLastUpdate, buildLastUpdate), refresh, filter)
-        );
-        return ApiResult.ready(page, page.metadata());
+    }
+
+    private static ApiResult<ChampionView> pending(Filter filter, Availability availability) {
+        ChampionWork work = schedule(filter, availability.missingStats(), availability.missingBuild());
+        List<String> missing = availability.missingStats()
+            ? (availability.missingBuild() ? List.of("stats", "build") : List.of("stats"))
+            : List.of("build");
+        return ApiResult.pending(ResponseMetadata.championPending(availability.lastUpdate(), filter, missing, work.jobIds()));
+    }
+
+    private static Availability availability(Filter filter) {
+        ChampionStatsScope scope = ChampionStatsScope.from(filter);
+        try {
+            return new Availability(MongoDB.findChampionStatsLastUpdate(scope), MongoDB.findChampionBuildLastUpdate(filter));
+        } catch (MongoException failure) {
+            throw lookupFailure(filter, failure);
+        } catch (Exception failure) {
+            LOG.warn("[ChampionLookup] filter=" + filter.toKey() + " statsScope=" + scope.toKey()
+                + " code=" + failure.getCode() + " cause=" + failure.getMessage());
+            throw failure;
+        }
+    }
+
+    private static ChampionData readData(Filter filter) {
+        try {
+            ChampionStatsDocument document = MongoDB.findChampionStatsDocument(ChampionStatsScope.from(filter), true);
+            if (document != null && !document.ready) {
+                throw new Exception(Exception.Type.UNAVAILABLE, "champion_data_changed",
+                    "Champion snapshot is no longer available for " + filter.toKey());
+            }
+
+            boolean arena = filter.queue() == GameQueueType.CHERRY;
+            ChampionBuildSnapshot snapshot = arena ? null : MongoDB.findChampionBuildSnapshot(filter);
+            Build arenaBuild = arena ? MongoDB.findChampionArenaBuild(filter) : null;
+            ChampionStatistics stats = null;
+            if (document != null) {
+                ChampionNode node = document.champions.get(filter.champion());
+                ChampionLeafStats leaf = node == null ? null
+                    : (filter.lane() == null ? node.overall() : node.lanes.get(filter.lane().name()));
+                stats = leaf != null && leaf.games > 0
+                    ? ChampionAnalyzer.toChampionStatistics(filter, document, node, leaf) : ChampionAnalyzer.empty(filter);
+            }
+            return new ChampionData(stats, snapshot, arenaBuild);
+        } catch (MongoException failure) {
+            throw lookupFailure(filter, failure);
+        } catch (Exception failure) {
+            LOG.warn("[ChampionLookup] filter=" + filter.toKey()
+                + " code=" + failure.getCode() + " cause=" + failure.getMessage());
+            throw failure;
+        }
+    }
+
+    private static ChampionData readRequiredData(Filter filter) {
+        ChampionData data = readData(filter);
+        if (data.stats() == null || !data.hasBuild()) {
+            throw new Exception(Exception.Type.UNAVAILABLE, "champion_data_changed",
+                "Champion snapshot is no longer available for " + filter.toKey());
+        }
+        return data;
+    }
+
+    private static Exception lookupFailure(Filter filter, MongoException failure) {
+        LOG.warn("[ChampionLookup] filter=" + filter.toKey() + " statsScope="
+            + ChampionStatsScope.from(filter).toKey() + " cause=" + failure);
+        return new Exception(Exception.Type.UNAVAILABLE, "champion_lookup_failed",
+            "Unable to read champion data for " + filter.toKey(), failure, null);
     }
 
     private List<Filter> getBuildFilters(String patch) {
@@ -558,39 +572,8 @@ public class ChampionService {
 
     private void addBuildFilter(Map<String, Filter> filters, Filter filter, String patch) {
         if (filter == null || filter.champion() == 0 || !patch.equals(filter.patch())) return;
-        if (!GameQueueTypeUtils.hasLane(filter.queue())) filter.setLane(null);
-        filters.put(filter.toKey(), filter);
-    }
-
-    static Filter statisticsFilter(Filter filter) {
-        return new Filter().setPatch(filter.patch()).setQueue(filter.queue()).setRank(filter.rank())
-            .setRankBehavior(filter.rankBehavior()).setRegion(filter.region()).setLane(filter.lane());
-    }
-
-    static List<Filter> statisticsCacheFilters(Filter filter) {
-        if (filter == null || filter.champion() == 0) return List.of();
-        List<LaneType> lanes = new ArrayList<>();
-        lanes.add(null);
-        if (filter.queue() != null && GameQueueTypeUtils.hasLane(filter.queue())) lanes.addAll(LaneTypeUtils.playables());
-        lanes.add(LaneType.NONE);
-        List<Filter> result = new ArrayList<>(lanes.size());
-        for (LaneType lane : lanes) result.add(statisticsFilter(filter).setChampion(filter.champion()).setLane(lane));
-        return result;
-    }
-
-    private static void invalidateStatisticsScope(Filter filter) {
-        if (filter == null) return;
-        ChampionStatsDocument document = MongoDB.findChampionStatsDocument(
-            ChampionStatsScope.from(filter));
-        if (document == null) return;
-        for (Integer champion : document.champions.keySet()) invalidateStatistics(statisticsFilter(filter).setChampion(champion));
-    }
-
-    private static void invalidateStatistics(Filter filter) {
-        for (Filter cached : statisticsCacheFilters(filter)) {
-            CacheInvalidationService.clearRedis(RedisKey.CHAMPION_STATS, cached.champion(), cached.genericKey());
-            CacheInvalidationService.clearRedis(RedisKey.CHAMPION_PAGE, cached.champion(), cached.pageKey());
-        }
+        Filter snapshot = dataFilter(filter);
+        filters.put(snapshot.toKey(), snapshot);
     }
 
     private static List<Filter> tierFilters(Filter base) {

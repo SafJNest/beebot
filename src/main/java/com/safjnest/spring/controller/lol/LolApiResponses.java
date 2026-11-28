@@ -1,5 +1,6 @@
 package com.safjnest.spring.controller.lol;
 
+import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.server.ResponseStatusException;
@@ -19,8 +20,12 @@ public final class LolApiResponses {
     ) {
         return switch (result.status()) {
             case READY, PARTIAL -> ResponseEntity.ok(result.payload());
-            case PENDING -> ResponseEntity.status(HttpStatus.ACCEPTED)
-                .body(new LolApiError(HttpStatus.ACCEPTED.value(), pendingCode, pendingMessage, result.metadata()));
+            case PENDING -> {
+                ResponseEntity.BodyBuilder response = ResponseEntity.status(HttpStatus.ACCEPTED);
+                if (result.metadata() != null && result.metadata().jobIds() != null)
+                    response.cacheControl(CacheControl.noStore());
+                yield response.body(new LolApiError(HttpStatus.ACCEPTED.value(), pendingCode, pendingMessage, result.metadata()));
+            }
             case NOT_FOUND -> throw new ResponseStatusException(HttpStatus.NOT_FOUND, notFoundMessage);
         };
     }

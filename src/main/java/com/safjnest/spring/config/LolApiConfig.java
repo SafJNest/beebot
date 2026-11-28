@@ -88,6 +88,7 @@ public class LolApiConfig implements WebMvcConfigurer {
                 provider.defaultSerializeField("powerCurve", stats.powerCurve(), generator);
                 provider.defaultSerializeField("trend", stats.trend(), generator);
                 provider.defaultSerializeField("synergies", stats.synergies(), generator);
+                provider.defaultSerializeField("allySynergies", stats.allySynergies(), generator);
                 provider.defaultSerializeField("subteams", stats.subteams(), generator);
                 provider.defaultSerializeField("subteamsById", stats.subteamsById(), generator);
                 generator.writeEndObject();

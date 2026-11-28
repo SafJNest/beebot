@@ -53,7 +53,6 @@ public enum RedisKey {
     CONTEXTUAL_LEADERBOARD_ACCESS("los:leaderboard:access", Duration.ZERO),
     RECORD_COUNT("los:records:count:%s:%s:%s:%s", Duration.ofMinutes(1)),
     CONTEXTUAL_LEADERBOARD_BUILD("los:leaderboard:building:%s", Duration.ofMinutes(10)),
-    CHAMPION_STATS("los:champion:%s:stats:%s", Duration.ofHours(12)),
     CHAMPION_PAGE("los:champion:%s:page:%s", Duration.ofHours(1)),
     CHAMPION_TIER_LIST("los:champion:tier-list:%s", Duration.ofDays(1)),
 

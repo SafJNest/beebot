@@ -16,8 +16,7 @@ public class ServiceSettings {
     private DatabaseSettings testDatabase;
     private DatabaseSettings testWebsiteDatabase;
     private DatabaseSettings leagueDatabase;
-    @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
-    private String mongo;
+    private MongoSettings mongo;
     private DatabaseSettings spotifyDatabase;
     private RiotSettings riot;
     private TwitchSettings twitch;

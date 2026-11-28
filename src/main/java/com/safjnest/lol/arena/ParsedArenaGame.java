@@ -2,16 +2,13 @@ package com.safjnest.lol.arena;
 
 import java.util.List;
 
-public record ParsedArenaGame(boolean win, Integer bootsId, Integer firstPrismaticId,
-        boolean firstPrismaticFallback, List<Integer> prismatics, List<Integer> buildItems,
-        List<Augment> augments, boolean buildTimeline, List<Integer> fallbackBuildItems) {
+import com.safjnest.lol.utils.ChampionBuildTimelineUtils.ItemEvent;
+import com.safjnest.lol.utils.ChampionBuildTimelineUtils.SkillEvents;
 
-    public ParsedArenaGame {
-        prismatics = List.copyOf(prismatics);
-        buildItems = List.copyOf(buildItems);
-        augments = List.copyOf(augments);
-        fallbackBuildItems = List.copyOf(fallbackBuildItems);
-    }
+public record ParsedArenaGame(boolean win, int placement, ItemEvent boots, ItemEvent firstPrismatic,
+        boolean firstPrismaticFallback, List<ItemEvent> prismatics, List<ItemEvent> items,
+        int orderedItemCount, List<Integer> fallbackBuildItems, List<Augment> augments,
+        boolean buildTimeline, List<Integer> fallbackSkillOrder, SkillEvents skills) {
 
     public record Augment(int id, int position) {}
 }
