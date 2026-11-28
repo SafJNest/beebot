@@ -90,6 +90,9 @@ the optional fallback for instances without R2. See [R2 credentials](https://dev
   indexes. Compare `explain("executionStats")` using representative queries
   and verify plans before retiring existing indexes. For current rebuild
   commands, inspect `MongoMigration` and the bot's test command.
+- The owner commands `!test fix-timeline <puuid>` and
+  `!test fix-timeline-patch <patch> [evolve]` rebuild match events and stored
+  skill orders. The `evolve` scope selects matches with Kai'Sa, Kha'Zix or Viktor.
 - MongoDB maintenance and index operations are not run automatically by the
   application. Check the current MongoDB code and deployment before applying
   operator commands.

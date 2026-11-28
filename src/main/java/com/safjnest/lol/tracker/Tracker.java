@@ -639,7 +639,9 @@ public class Tracker {
         return analyzeTimelineEventData(matchData, participants, timeline, items, gameDuration);
     }
 
-    public static Map<String, Object> rebuildTimelineEvents(LOLTimeline timeline) {
+    public record RebuiltTimeline(Map<String, Object> events, Map<String, List<Integer>> skillOrders) {}
+
+    public static RebuiltTimeline rebuildTimeline(LOLTimeline timeline) {
         if (timeline == null || timeline.getFrames() == null || timeline.getFrames().isEmpty()
                 || timeline.getParticipants() == null || timeline.getParticipants().isEmpty()) return null;
 
@@ -653,8 +655,26 @@ public class Tracker {
         }
         HashMap<String, HashMap<String, String>> eventData = analyzeTimelineEventData(
             matchData, List.of(), timeline, Map.of(), gameDuration);
-        return eventData == null || eventData.get("match") == null
-            ? null : new JSONObject(createJSONEvents(eventData.get("match"))).toMap();
+        if (eventData == null || eventData.get("match") == null) {
+            return null;
+        }
+
+        Map<String, List<Integer>> skillOrders = new LinkedHashMap<>();
+        for (var participant : timeline.getParticipants()) {
+            String puuid = participant.getPuuid();
+            Map<String, String> player = eventData.get(puuid);
+            if (puuid == null || puuid.isBlank() || player == null || !player.containsKey("skill_order")) {
+                continue;
+            }
+            String[] slots = player.get("skill_order").split(",");
+            List<Integer> order = new ArrayList<>(slots.length);
+            for (String slot : slots) {
+                order.add(Integer.parseInt(slot));
+            }
+            skillOrders.put(puuid, order);
+        }
+        Map<String, Object> events = new JSONObject(createJSONEvents(eventData.get("match"))).toMap();
+        return new RebuiltTimeline(events, skillOrders);
     }
 
     private static HashMap<String, HashMap<String, String>> analyzeTimelineEventData(

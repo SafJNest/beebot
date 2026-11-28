@@ -698,26 +698,25 @@ public final class MongoDB {
         return value instanceof Number number ? number.longValue() : null;
     }
 
-    public static List<LeagueShard> findTimelineRegionsByPatch(String patch) {
+    public static List<LeagueShard> findTimelineRegionsByPatch(String patch, List<Integer> champions) {
         if (patch == null || patch.isBlank()) return List.of();
         List<LeagueShard> result = new ArrayList<>();
-        for (String region : matches().distinct("region", Filters.eq("patchMajor", patchMajor(patch)), String.class)) {
+        for (String region : matches().distinct("region", timelineRepairFilter(patch, null, champions), String.class)) {
             LeagueShard shard = enumValue(LeagueShard.class, region);
             if (shard != null && shard != LeagueShard.UNKNOWN) result.add(shard);
         }
         return result;
     }
 
-    public static long countMatchesByPatch(String patch, LeagueShard shard) {
+    public static long countMatchesByPatch(String patch, LeagueShard shard, List<Integer> champions) {
         if (patch == null || patch.isBlank() || shard == null) return 0;
-        return matches().countDocuments(Filters.and(
-            Filters.eq("region", shard.name()), patchMajorFilter(patch)));
+        return matches().countDocuments(timelineRepairFilter(patch, shard, champions));
     }
 
-    public static void forEachTimelineMatchByPatch(String patch, LeagueShard shard, Consumer<String> consumer) {
+    public static void forEachTimelineMatchByPatch(String patch, LeagueShard shard, List<Integer> champions,
+                                                   Consumer<String> consumer) {
         if (patch == null || patch.isBlank() || shard == null || consumer == null) return;
-        try (MongoCursor<Document> cursor = matches().find(Filters.and(
-                Filters.eq("region", shard.name()), patchMajorFilter(patch)))
+        try (MongoCursor<Document> cursor = matches().find(timelineRepairFilter(patch, shard, champions))
                 .projection(Projections.include("_id"))
                 .batchSize(250)
                 .iterator()) {
@@ -2784,6 +2783,26 @@ public final class MongoDB {
         return upsertMatchEvents(fullGameId, events);
     }
 
+    public static boolean updateMatchSkillOrders(String fullGameId, Map<String, List<Integer>> skillOrders) {
+        if (skillOrders.isEmpty()) {
+            return true;
+        }
+
+        List<Bson> updates = new ArrayList<>(skillOrders.size());
+        List<Bson> participantFilters = new ArrayList<>(skillOrders.size());
+        for (Map.Entry<String, List<Integer>> order : skillOrders.entrySet()) {
+            String alias = "player" + updates.size();
+            participantFilters.add(Filters.eq(alias + ".puuid", order.getKey()));
+            updates.add(Updates.set("participants.$[" + alias + "].skillOrder", order.getValue()));
+        }
+        UpdateResult result = matches().updateOne(Filters.eq("_id", fullGameId), Updates.combine(updates),
+            new UpdateOptions().arrayFilters(participantFilters));
+        if (!result.wasAcknowledged()) {
+            throw new IllegalStateException("Mongo match skill order update was not acknowledged");
+        }
+        return result.getMatchedCount() > 0;
+    }
+
     public static boolean upsertMatchEvents(String fullGameId, Map<String, Object> events) {
         Map<String, Object> source = events == null ? Map.of() : events;
         if (source.isEmpty()) {
@@ -3799,6 +3818,18 @@ public final class MongoDB {
 
     private static void addChampionBuildProjectionFields(Document projection) {
         for (String field : CHAMPION_BUILD_PARTICIPANT_PROJECTION_FIELDS) projection.append(field, 1);
+    }
+
+    private static Bson timelineRepairFilter(String patch, LeagueShard shard, List<Integer> champions) {
+        List<Bson> filters = new ArrayList<>(3);
+        filters.add(patchMajorFilter(patch));
+        if (shard != null) {
+            filters.add(Filters.eq("region", shard.name()));
+        }
+        if (!champions.isEmpty()) {
+            filters.add(Filters.in("participants.champion", champions));
+        }
+        return Filters.and(filters);
     }
 
     private static Bson patchMajorFilter(String patch) {
