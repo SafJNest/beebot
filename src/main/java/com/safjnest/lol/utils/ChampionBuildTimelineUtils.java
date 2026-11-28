@@ -1,7 +1,6 @@
 package com.safjnest.lol.utils;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -11,154 +10,102 @@ import org.json.JSONObject;
 
 public final class ChampionBuildTimelineUtils {
 
-    private static final int SKILL_ORDER_LENGTH = 18;
     private static final int MAX_SKILL_SLOT = 4;
-    private static final long STARTER_WINDOW_MILLIS = 2 * 60 * 1000L;
+    private static final SkillEvents EMPTY_SKILLS = new SkillEvents(List.of(), List.of());
 
     private ChampionBuildTimelineUtils() {}
 
-    public static List<Integer> skillOrder(JSONArray fallback, List<SkillUpgrade> upgrades) {
-        List<Integer> fallbackOrder = new ArrayList<>();
-        if (fallback != null) {
-            StringBuilder rawSkillOrder = new StringBuilder();
-            for (int index = 0; index < fallback.length(); index++)
-                rawSkillOrder.append(fallback.optString(index, ""));
-            for (int index = 0; index < rawSkillOrder.length(); index++) {
-                int slot = Character.getNumericValue(rawSkillOrder.charAt(index));
-                fallbackOrder.add(slot >= 1 && slot <= MAX_SKILL_SLOT ? slot : 0);
-            }
+    public static SkillEvents skillEvents(Object rawEvents, String puuid) {
+        if (puuid == null || puuid.isBlank()) {
+            return EMPTY_SKILLS;
         }
-        return skillOrder(fallbackOrder, upgrades);
-    }
-
-    public static List<Integer> skillOrder(List<Integer> fallback, List<SkillUpgrade> upgrades) {
-        List<Integer> result = new ArrayList<>(Collections.nCopies(SKILL_ORDER_LENGTH, 0));
-        if (upgrades != null && !upgrades.isEmpty()) {
-            int fallbackLevel = 1;
-            for (SkillUpgrade upgrade : upgrades) {
-                int level = upgrade.championLevel() == null ? fallbackLevel : upgrade.championLevel();
-                fallbackLevel = Math.max(fallbackLevel + 1, level + 1);
-                if (level >= 1 && level <= result.size()
-                        && upgrade.skillSlot() >= 1 && upgrade.skillSlot() <= MAX_SKILL_SLOT)
-                    result.set(level - 1, upgrade.skillSlot());
-            }
-            return result;
-        }
-        if (fallback == null) return result;
-        for (int index = 0; index < Math.min(result.size(), fallback.size()); index++) {
-            Integer slot = fallback.get(index);
-            if (slot != null && slot >= 1 && slot <= MAX_SKILL_SLOT) result.set(index, slot);
-        }
-        return result;
-    }
-
-    public static List<SkillUpgrade> skillUpgrades(Object rawEvents, String puuid) {
-        if (puuid == null || puuid.isBlank()) return List.of();
         JSONObject events = json(rawEvents);
-        if (events == null) return List.of();
+        if (events == null) {
+            return EMPTY_SKILLS;
+        }
         JSONObject refs = object(events, "participants");
         JSONArray skills = array(events, "skill_events");
-        if (refs == null || skills == null) return List.of();
-
-        List<LevelEvent> levels = new ArrayList<>();
-        JSONArray levelEvents = array(events, "level_events");
-        if (levelEvents != null) for (int i = 0; i < levelEvents.length(); i++) {
-            JSONObject level = levelEvents.optJSONObject(i);
-            if (level == null || !puuid.equals(resolve(level.opt("participant"), refs))) continue;
-            long timestamp = level.optLong("timestamp", -1);
-            int value = level.optInt("level", 0);
-            if (timestamp >= 0 && value > 0) levels.add(new LevelEvent(timestamp, value));
+        if (refs == null || skills == null) {
+            return EMPTY_SKILLS;
         }
-        levels.sort(Comparator.comparingLong(LevelEvent::timestampMillis));
 
-        List<SkillUpgrade> result = new ArrayList<>();
+        List<SkillUpgrade> upgrades = new ArrayList<>();
+        List<SkillUpgrade> evolutions = null;
         for (int i = 0; i < skills.length(); i++) {
             JSONObject skill = skills.optJSONObject(i);
-            if (skill == null || "EVOLVE".equals(skill.optString("level_up_type"))
-                    || !puuid.equals(resolve(skill.opt("participant"), refs))) continue;
+            if (skill == null || !puuid.equals(resolve(skill.opt("participant"), refs))) {
+                continue;
+            }
+            String type = skill.optString("level_up_type");
             long timestamp = skill.optLong("timestamp", -1);
             int slot = skill.optInt("skill_slot", 0);
-            if (timestamp < 0 || slot < 1 || slot > 4) continue;
-            Integer championLevel = null;
-            for (LevelEvent level : levels) {
-                if (level.timestampMillis() > timestamp) break;
-                championLevel = level.level();
+            if (timestamp < 0 || slot < 1 || slot > MAX_SKILL_SLOT) {
+                continue;
             }
-            result.add(new SkillUpgrade(championLevel, slot, timestamp));
+            if ("EVOLVE".equals(type)) {
+                if (evolutions == null) {
+                    evolutions = new ArrayList<>(4);
+                }
+                evolutions.add(new SkillUpgrade(slot, timestamp));
+            } else if (type.isBlank() || "NORMAL".equals(type)) {
+                upgrades.add(new SkillUpgrade(slot, timestamp));
+            }
         }
-        result.sort(Comparator.comparingLong(SkillUpgrade::timestampMillis));
-        return List.copyOf(result);
+        if (upgrades.isEmpty() && evolutions == null) {
+            return EMPTY_SKILLS;
+        }
+
+        List<LevelEvent> levels = championLevels(events, refs, puuid);
+        List<SkillUpgrade> timedUpgrades = sortAndAttachLevels(upgrades, levels);
+        List<SkillUpgrade> timedEvolutions = evolutions == null ? List.of() : sortAndAttachLevels(evolutions, levels);
+        return new SkillEvents(timedUpgrades, timedEvolutions);
     }
 
     public static List<ItemEvent> itemEvents(Object rawEvents, String puuid) {
-        return itemEvents(rawEvents, puuid, Long.MAX_VALUE);
-    }
-
-    public static List<ItemEvent> starterItemEvents(Object rawEvents, String puuid) {
-        return itemEvents(rawEvents, puuid, STARTER_WINDOW_MILLIS);
-    }
-
-    private static List<ItemEvent> itemEvents(Object rawEvents, String puuid, long beforeTimestamp) {
-        if (puuid == null || puuid.isBlank()) return List.of();
+        if (puuid == null || puuid.isBlank()) {
+            return List.of();
+        }
         JSONObject events = json(rawEvents);
-        if (events == null) return List.of();
+        if (events == null) {
+            return List.of();
+        }
         JSONObject refs = object(events, "participants");
         JSONArray items = array(events, "item_events");
-        if (refs == null || items == null) return List.of();
+        if (refs == null || items == null) {
+            return List.of();
+        }
 
         List<JSONObject> ordered = new ArrayList<>();
-        for (int i = 0; i < items.length(); i++) {
-            JSONObject item = items.optJSONObject(i);
+        for (int index = 0; index < items.length(); index++) {
+            JSONObject item = items.optJSONObject(index);
             if (item != null && item.optLong("timestamp", -1) >= 0
-                    && item.optLong("timestamp", -1) < beforeTimestamp
-                    && puuid.equals(resolve(item.opt("participant"), refs))) ordered.add(item);
+                    && puuid.equals(resolve(item.opt("participant"), refs))) {
+                ordered.add(item);
+            }
         }
         ordered.sort(Comparator.comparingLong(item -> item.optLong("timestamp", Long.MAX_VALUE)));
 
-        List<ItemAcquisition> active = new ArrayList<>();
-        List<ItemAcquisition> previous = null;
+        List<ItemEvent> purchases = new ArrayList<>();
         for (JSONObject event : ordered) {
-            String type = event.optString("event", "");
-            long timestamp = event.optLong("timestamp", -1);
-            int item = event.optInt("item", 0);
-            int before = event.optInt("before", 0);
-            int after = event.optInt("after", 0);
-            if (timestamp < 0) continue;
-            if ("ITEM_UNDO".equals(type)) {
-                if (previous != null) {
-                    active = previous;
-                    previous = null;
-                } else if (after > 0) {
-                    removeLast(active, after);
-                } else if (before > 0 && active.stream().noneMatch(acquisition -> acquisition.itemId() == before)) {
-                    active.add(new ItemAcquisition(before, timestamp));
+            String type = event.optString("event");
+            int before = event.optInt("before");
+            if ("ITEM_UNDO".equals(type) && before > 0) {
+                for (int index = purchases.size() - 1; index >= 0; index--) {
+                    if (purchases.get(index).itemId() == before) {
+                        purchases.remove(index);
+                        break;
+                    }
                 }
-                continue;
-            }
-
-            previous = new ArrayList<>(active);
-            if ("ITEM_PURCHASED".equals(type)) {
-                if (before > 0 && after > 0 && before != after) removeLast(active, before);
-                int acquired = after > 0 ? after : item;
-                if (acquired > 0) active.add(new ItemAcquisition(acquired, timestamp));
-            } else if ("ITEM_SOLD".equals(type) || "ITEM_DESTROYED".equals(type)) {
-                removeLast(active, before > 0 ? before : item);
+            } else if ("ITEM_PURCHASED".equals(type)) {
+                int after = event.optInt("after");
+                int itemId = after > 0 ? after : event.optInt("item");
+                if (itemId > 0) {
+                    long timestamp = event.getLong("timestamp");
+                    purchases.add(new ItemEvent(itemId, timestamp));
+                }
             }
         }
-        active.sort(Comparator.comparingLong(ItemAcquisition::timestampMillis));
-        List<ItemEvent> result = new ArrayList<>(active.size());
-        for (ItemAcquisition acquisition : active)
-            result.add(new ItemEvent(acquisition.itemId(), acquisition.timestampMillis()));
-        return List.copyOf(result);
-    }
-
-    private static void removeLast(List<ItemAcquisition> acquisitions, int itemId) {
-        for (int i = acquisitions.size() - 1; i >= 0; i--) {
-            if (acquisitions.get(i).itemId() == itemId) {
-                acquisitions.remove(i);
-                return;
-            }
-        }
+        return List.copyOf(purchases);
     }
 
     private static JSONObject json(Object raw) {
@@ -198,11 +145,59 @@ public final class ChampionBuildTimelineUtils {
         return refs == null ? key : refs.optString(key, null);
     }
 
-    public record SkillUpgrade(Integer championLevel, int skillSlot, long timestampMillis) {}
+    private static List<SkillUpgrade> sortAndAttachLevels(List<SkillUpgrade> skills, List<LevelEvent> levels) {
+        skills.sort(Comparator.comparingLong(SkillUpgrade::timestampMillis));
+        if (levels.isEmpty()) {
+            return skills;
+        }
+
+        int level = levels.getFirst().level() == 2 ? 1 : 0;
+        int next = 0;
+        for (int i = 0; i < skills.size(); i++) {
+            SkillUpgrade skill = skills.get(i);
+            while (next < levels.size() && levels.get(next).timestampMillis() <= skill.timestampMillis()) {
+                level = levels.get(next).level();
+                next++;
+            }
+            if (level > 0) {
+                skills.set(i, new SkillUpgrade(skill.skillSlot(), skill.timestampMillis(), level));
+            }
+        }
+        return skills;
+    }
+
+    private static List<LevelEvent> championLevels(JSONObject events, JSONObject refs, String puuid) {
+        JSONArray raw = array(events, "level_events");
+        if (raw == null) {
+            return List.of();
+        }
+
+        List<LevelEvent> levels = new ArrayList<>();
+        for (int i = 0; i < raw.length(); i++) {
+            JSONObject event = raw.optJSONObject(i);
+            if (event == null || !puuid.equals(resolve(event.opt("participant"), refs))) {
+                continue;
+            }
+            int level = event.optInt("level", 0);
+            long timestamp = event.optLong("timestamp", -1);
+            if (level > 0 && timestamp >= 0) {
+                levels.add(new LevelEvent(level, timestamp));
+            }
+        }
+        levels.sort(Comparator.comparingLong(LevelEvent::timestampMillis).thenComparingInt(LevelEvent::level));
+        return levels;
+    }
+
+    private record LevelEvent(int level, long timestampMillis) {}
+
+    public record SkillUpgrade(int skillSlot, long timestampMillis, int championLevel) {
+        public SkillUpgrade(int skillSlot, long timestampMillis) {
+            this(skillSlot, timestampMillis, 0);
+        }
+    }
+
+    public record SkillEvents(List<SkillUpgrade> upgrades, List<SkillUpgrade> evolutions) {}
 
     public record ItemEvent(int itemId, long timestampMillis) {}
 
-    private record ItemAcquisition(int itemId, long timestampMillis) {}
-
-    private record LevelEvent(long timestampMillis, int level) {}
 }

@@ -21,7 +21,7 @@ public final class MatchupTimelineUtils {
     }
 
     public static Data read(Object rawEvents) {
-        JSONObject events = json(rawEvents);
+        JSONObject events = eventObject(rawEvents);
         if (events == null) return Data.empty();
 
         JSONObject refs = object(events, "participants");
@@ -66,7 +66,7 @@ public final class MatchupTimelineUtils {
     }
 
     public static boolean hasTimeline(Object rawEvents) {
-        JSONObject events = json(rawEvents);
+        JSONObject events = eventObject(rawEvents);
         if (events == null) return false;
         JSONObject participants = object(events, "participants");
         if (participants == null || participants.keySet().isEmpty()) return false;
@@ -81,7 +81,7 @@ public final class MatchupTimelineUtils {
         return data.plates().getOrDefault(team + ':' + mapLane, 0);
     }
 
-    private static JSONObject json(Object raw) {
+    public static JSONObject eventObject(Object raw) {
         if (raw instanceof JSONObject object) return object;
         if (raw instanceof String value && !value.isBlank()) {
             try { return new JSONObject(value); }

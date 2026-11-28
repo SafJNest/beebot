@@ -5,8 +5,9 @@ import no.stelar7.api.r4j.basic.constants.types.lol.GameQueueType;
 import no.stelar7.api.r4j.basic.constants.types.lol.LaneType;
 import no.stelar7.api.r4j.basic.constants.types.lol.TierType;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
 import com.safjnest.lol.utils.FilterCodec;
-import com.safjnest.lol.utils.NumberUtils;
+import com.safjnest.utils.ParseUtils;
 import com.safjnest.lol.utils.PatchUtils;
 import com.safjnest.lol.utils.SeasonUtils;
 
@@ -31,6 +32,11 @@ public class Filter {
             this.timeStart = period[0];
             this.timeEnd = period[1];
         }
+    }
+
+    @JsonCreator
+    private static Filter restore() {
+        return new Filter(false);
     }
 
     public static Filter championBuild(int champion, String patch, GameQueueType queue) {
@@ -93,7 +99,7 @@ public class Filter {
         String raw = FilterCodec.decode(key);
         String[] parts = FilterCodec.split(raw);
         Filter filter = new Filter()
-            .setChampion(NumberUtils.parseInt(parts[0]))
+            .setChampion(ParseUtils.parseInt(parts[0]))
             .setLane(FilterCodec.decodeEnum(parts[1], LaneType.class))
             .setQueue(FilterCodec.decodeEnum(parts[2], GameQueueType.class))
             .setRank(FilterCodec.decodeEnum(parts[3], TierType.class))
@@ -109,7 +115,7 @@ public class Filter {
         String raw = FilterCodec.decodeUrl(key);
         String[] parts = FilterCodec.split(raw);
         Filter filter = new Filter()
-            .setChampion(NumberUtils.parseInt(parts[0]))
+            .setChampion(ParseUtils.parseInt(parts[0]))
             .setLane(FilterCodec.decodeOrdinal(parts[1], LaneType.class))
             .setQueue(FilterCodec.decodeOrdinal(parts[2], GameQueueType.class))
             .setRank(FilterCodec.decodeOrdinal(parts[3], TierType.class))

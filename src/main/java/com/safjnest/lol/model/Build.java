@@ -1,10 +1,13 @@
 package com.safjnest.lol.model;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.safjnest.lol.champion.RuneSignature;
 import com.safjnest.lol.utils.BuildUtils;
+import com.safjnest.lol.utils.ItemUtils;
 import com.safjnest.lol.model.statistics.StatisticalLeaf;
 import com.safjnest.utils.JsonCodec;
 
@@ -30,40 +33,59 @@ public record Build(
     @JsonProperty("roleBoundItems") List<Option> roleBoundItemOptions,
     @JsonProperty("slots") List<List<Option>> itemSlots,
     @JsonProperty("runes") List<RuneOption> runeOptions,
-    @JsonProperty("summonerSpells") List<Option> summonerSpellOptions,
+    @JsonProperty("summonerSpells") List<SummonerSpellOption> summonerSpellOptions,
     @JsonInclude(JsonInclude.Include.NON_NULL) List<SkillOrderOption> skillOrders,
+    @JsonInclude(JsonInclude.Include.NON_NULL) SkillOrderOption skillEvolutions,
     @JsonProperty("prismatics") List<Option> prismaticOptions,
     @JsonProperty("augments") List<List<Option>> augmentOptions,
-    @JsonInclude(JsonInclude.Include.NON_NULL) ArenaBuildData arena
+    @JsonInclude(JsonInclude.Include.NON_NULL) ArenaBuildData arena,
+    @JsonInclude(JsonInclude.Include.NON_NULL) String name,
+    @JsonInclude(JsonInclude.Include.NON_NULL) Integer nameKeystoneId,
+    @JsonInclude(JsonInclude.Include.NON_EMPTY) List<Badge> badges
 ) {
 
     public Build {
-        roleBoundItemOptions = roleBoundItemOptions == null ? List.of() : List.copyOf(roleBoundItemOptions);
-    }
-
-    public Build(Filter filter, int games, int wins, double winrate,
-            List<CoreBuildOption> coreBuilds, List<Option> coreItems, List<Option> starterOptions,
-            List<Option> bootOptions, List<Option> supportItemOptions, List<Option> roleBoundItemOptions,
-            List<List<Option>> itemSlots, List<RuneOption> runeOptions, List<Option> summonerSpellOptions,
-            List<SkillOrderOption> skillOrders, List<Option> prismaticOptions, List<List<Option>> augmentOptions) {
-        this(filter, games, wins, winrate, coreBuilds, coreItems, starterOptions, bootOptions,
-            supportItemOptions, roleBoundItemOptions, itemSlots, runeOptions, summonerSpellOptions,
-            skillOrders, prismaticOptions, augmentOptions, null);
+        starterOptions = withoutUnupgradedBoots(starterOptions);
+        bootOptions = withoutUnupgradedBoots(bootOptions);
+        roleBoundItemOptions = roleBoundItemOptions == null ? List.of() : withoutUnupgradedBoots(List.copyOf(roleBoundItemOptions));
+        badges = badges == null ? List.of() : List.copyOf(badges);
+        if (skillOrders != null && skillOrders.size() > 1) {
+            skillOrders = List.of(skillOrders.getFirst());
+        }
     }
 
     public enum Kind { ITEM, BOOTS, PRISMATIC, AUGMENT }
+
+    public enum Badge { MOST_POPULAR, BEST_ADJUSTED_WINRATE }
+
+    public Build withLabels(String name, Integer keystoneId, List<Badge> badges) {
+        return new Build(filter, games, wins, winrate, coreBuilds, coreItems, starterOptions, bootOptions,
+            supportItemOptions, roleBoundItemOptions, itemSlots, runeOptions, summonerSpellOptions,
+            skillOrders, skillEvolutions, prismaticOptions, augmentOptions, arena, name, keystoneId, badges);
+    }
+
+    public static Build empty(Filter filter) {
+        return new Build(filter, 0, 0, 0, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(),
+            List.of(), List.of(), List.of(), List.of(), null, List.of(), List.of(), null, null, null, List.of());
+    }
 
     public static Build fromArena(Filter filter, ArenaBuildData arena) {
         if (arena == null) return null;
         long total = arena.games();
         List<CoreBuildOption> cores = new ArrayList<>();
-        Map<Integer, long[]> boots = new TreeMap<>();
         Map<Integer, long[]> coreItems = new TreeMap<>();
         for (ArenaBuildData.Core core : arena.coreBuilds()) {
             cores.add(new CoreBuildOption(core.id(), core.items(), Math.toIntExact(core.matches()),
-                Math.toIntExact(core.wins()), core.winrate(), core.pickrate()));
-            addArenaCount(boots, core.items().get(0), core.matches(), core.wins());
+                Math.toIntExact(core.wins()), core.winrate(), core.pickrate(), core.averageCompletionTimeSeconds(),
+                core.timedMatches() == null ? null : Math.toIntExact(core.timedMatches())));
             for (int id : core.items()) addArenaCount(coreItems, id, core.matches(), core.wins());
+        }
+        List<Option> bootOptions = new ArrayList<>();
+        for (ArenaBuildData.Option boot : arena.boots()) {
+            bootOptions.add(new Option(String.valueOf(boot.id()), Math.toIntExact(boot.matches()),
+                Math.toIntExact(boot.wins()), boot.winrate(), total == 0 ? 0 : (double) boot.matches() / total,
+                boot.averagePurchaseTimeSeconds(),
+                boot.timedMatches() == null ? null : Math.toIntExact(boot.timedMatches())));
         }
         Map<Integer, long[]> prismatics = new TreeMap<>();
         for (ArenaBuildData.Option item : arena.prismatics())
@@ -76,10 +98,10 @@ public record Build(
             augments.add(arenaOptions(values, total));
         }
         return new Build(filter, Math.toIntExact(total), Math.toIntExact(arena.wins()),
-            arena.winrate(), cores, arenaOptions(coreItems, total), List.of(), arenaOptions(boots, total),
+            arena.winrate(), cores, arenaOptions(coreItems, total), List.of(), bootOptions,
             List.of(), List.of(), List.of(), List.of(), List.of(),
-            null,
-            arenaOptions(prismatics, total), augments, arena);
+            arena.skillOrders().isEmpty() ? null : arena.skillOrders(), arena.skillEvolutions(),
+            arenaOptions(prismatics, total), augments, arena, null, null, List.of());
     }
 
     private static void addArenaCount(Map<Integer, long[]> values, int id, long games, long wins) {
@@ -143,14 +165,6 @@ public record Build(
             }
         }
 
-        public int getSpell1() {
-            return itemId() / 100;
-        }
-
-        public int getSpell2() {
-            return itemId() % 100;
-        }
-
         public String prettyWinrate() {
             return String.format("%.2f", winrate * 100) + "%";
         }
@@ -173,19 +187,57 @@ public record Build(
     public record RuneOption(String id, RuneSignature configuration, int matches, int wins,
                              double winrate, double pickrate) {}
 
-    public record SkillOrderOption(String id, List<Integer> order, int matches, int wins,
-                                   double winrate, double pickrate, List<SkillTiming> timedOrder) {
+    public record SummonerSpellOption(String id, int matches, int wins, double winrate, double pickrate) {
+        int packedId() {
+            int separator = id.indexOf('-');
+            if (separator < 0) {
+                return Integer.parseInt(id);
+            }
+            int first = Integer.parseInt(id, 0, separator, 10);
+            int second = Integer.parseInt(id, separator + 1, id.length(), 10);
+            return first * 100 + second;
+        }
+
+        @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+        public int getSpell1() {
+            return packedId() / 100;
+        }
+
+        @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+        public int getSpell2() {
+            return packedId() % 100;
+        }
+    }
+
+    @JsonIgnoreProperties({"id", "matches", "wins", "winrate", "pickrate"})
+    public record SkillOrderOption(List<Integer> order, List<SkillTiming> timedOrder,
+                                   @JsonInclude(JsonInclude.Include.NON_NULL) TimingMethod timingMethod) {
         public SkillOrderOption {
             timedOrder = timedOrder == null ? List.of() : List.copyOf(timedOrder);
         }
 
-        public SkillOrderOption(String id, List<Integer> order, int matches, int wins,
-                                double winrate, double pickrate) {
-            this(id, order, matches, wins, winrate, pickrate, List.of());
+        public SkillOrderOption(List<Integer> order, List<SkillTiming> timedOrder) {
+            this(order, timedOrder, null);
         }
     }
 
-    public record SkillTiming(Integer level, int abilitySlot, double averageUpgradeTimeSeconds, int timedMatches) {}
+    public enum TimingMethod { PREFIX_AVERAGE_INTERVALS }
+
+    public record SkillTiming(@JsonInclude(JsonInclude.Include.NON_NULL) Integer level, Integer skill,
+                              int abilitySlot, double averageUpgradeTimeSeconds, int timedMatches) {
+        @JsonCreator
+        public static SkillTiming fromJson(@JsonProperty("level") Integer level,
+                                           @JsonProperty("skill") Integer skill,
+                                           @JsonProperty("abilitySlot") int abilitySlot,
+                                           @JsonProperty("averageUpgradeTimeSeconds") double averageUpgradeTimeSeconds,
+                                           @JsonProperty("timedMatches") int timedMatches,
+                                           @JsonProperty("championLevel") Integer championLevel) {
+            if (skill == null) {
+                return new SkillTiming(championLevel, level, abilitySlot, averageUpgradeTimeSeconds, timedMatches);
+            }
+            return new SkillTiming(level, skill, abilitySlot, averageUpgradeTimeSeconds, timedMatches);
+        }
+    }
 
     /** Compatibility shape used by the Discord command and old callers. */
     public record SlotOption(int itemId, int matches, double winrate) {
@@ -239,12 +291,12 @@ public record Build(
             runes == null ? List.of() : List.of(new RuneOption(
                 runes.toKey(), runes, games, winsFor(games, winrate), winrate, 1
             )),
-            toSlotOptions(summonerSpells, games),
-            spellOrder.isEmpty() ? List.of() : List.of(new SkillOrderOption(
-                BuildUtils.joinInts(spellOrder), spellOrder, games, winsFor(games, winrate), winrate, 1
-            )),
+            toSummonerSpellOptions(summonerSpells, games),
+            spellOrder.isEmpty() ? List.of() : List.of(new SkillOrderOption(spellOrder, List.of())),
+            null,
             flattenOptions(prismatics),
-            augments.isEmpty() ? List.of() : List.of(toSlotOptions(augments, games))
+            augments.isEmpty() ? List.of() : List.of(toSlotOptions(augments, games)),
+            null, null, null, List.of()
         );
     }
 
@@ -300,7 +352,11 @@ public record Build(
 
     @JsonIgnore
     public List<SlotOption> summonerSpells() {
-        return toLegacy(summonerSpellOptions);
+        List<SlotOption> result = new ArrayList<>(summonerSpellOptions.size());
+        for (SummonerSpellOption option : summonerSpellOptions) {
+            result.add(new SlotOption(option.packedId(), option.matches(), option.winrate()));
+        }
+        return result;
     }
 
     @JsonIgnore
@@ -407,12 +463,33 @@ public record Build(
         return result;
     }
 
+    private static List<Option> withoutUnupgradedBoots(List<Option> options) {
+        if (options != null) {
+            for (Option option : options) {
+                if (ItemUtils.isUnupgradedBoots(option.itemId())) {
+                    return options.stream().filter(value -> !ItemUtils.isUnupgradedBoots(value.itemId())).toList();
+                }
+            }
+        }
+        return options;
+    }
+
     private static List<Option> toSlotOptions(List<SlotOption> options, int fallbackMatches) {
         List<Option> result = new ArrayList<>();
         for (SlotOption option : options) {
             int matches = option.matches() > 0 ? option.matches() : fallbackMatches;
             int wins = winsFor(matches, option.winrate());
             result.add(new Option(String.valueOf(option.itemId()), matches, wins, option.winrate(), 0));
+        }
+        return result;
+    }
+
+    private static List<SummonerSpellOption> toSummonerSpellOptions(List<SlotOption> options, int fallbackMatches) {
+        List<SummonerSpellOption> result = new ArrayList<>(options.size());
+        for (SlotOption option : options) {
+            int matches = option.matches() > 0 ? option.matches() : fallbackMatches;
+            int wins = winsFor(matches, option.winrate());
+            result.add(new SummonerSpellOption(String.valueOf(option.itemId()), matches, wins, option.winrate(), 0));
         }
         return result;
     }

@@ -1,73 +1,79 @@
 package com.safjnest.lol.queue.scheduler;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.assertThrows;
-
+import java.time.Clock;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
 import org.junit.Test;
 
 import com.safjnest.lol.model.Filter;
+import com.safjnest.lol.queue.Registry;
+import com.safjnest.lol.queue.Router;
+import com.safjnest.lol.queue.Router.Submission;
+import com.safjnest.lol.queue.job.JobPriority;
+
+import no.stelar7.api.r4j.basic.constants.types.lol.GameQueueType;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 public class ChampionMatrixRequestTest {
 
     @Test
-    public void startReturnsImmutableSnapshotAndRejectsLaterBuilds() {
+    public void aRunningMatrixCanStillSatisfyBuildsItAlreadyIncluded() {
         ChampionMatrixRequest request = new ChampionMatrixRequest();
-        Filter first = buildFilter(27);
-        Filter later = buildFilter(412);
+        Filter first = Filter.championBuild(222, "16.12", GameQueueType.TEAM_BUILDER_RANKED_SOLO);
+        Filter late = Filter.championBuild(103, "16.12", GameQueueType.TEAM_BUILDER_RANKED_SOLO);
 
         assertTrue(request.tryAddBuild(first));
-        List<Filter> buildFilters = request.startAndGetBuildFilters();
-
-        assertEquals(1, buildFilters.size());
-        assertEquals(first.toKey(), buildFilters.get(0).toKey());
-        assertFalse(request.tryAddBuild(later));
-        assertThrows(UnsupportedOperationException.class, () -> buildFilters.add(later));
-        assertEquals(1, buildFilters.size());
+        assertEquals(List.of(first), request.startAndGetBuildFilters());
+        assertTrue(request.tryAddBuild(first));
+        assertFalse(request.tryAddBuild(late));
+        assertFalse(request.includesBuild(late));
     }
 
     @Test
-    public void concurrentBuildRequestIsEitherInSnapshotOrRejected() throws Exception {
-        ChampionMatrixRequest request = new ChampionMatrixRequest();
-        Filter buildFilter = buildFilter(27);
-        CountDownLatch ready = new CountDownLatch(2);
-        CountDownLatch start = new CountDownLatch(1);
-        ExecutorService executor = Executors.newFixedThreadPool(2);
-
+    public void trackedSubmissionReturnsTheActivePidAndRunsOnlyOnce() throws Exception {
+        Registry registry = new Registry(Clock.systemUTC());
+        Router router = new Router(registry);
+        TestScheduler scheduler = new TestScheduler(registry);
+        router.register(scheduler);
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
         try {
-            Future<Boolean> add = executor.submit(() -> {
-                ready.countDown();
-                start.await();
-                return request.tryAddBuild(buildFilter);
-            });
-            Future<List<Filter>> snapshot = executor.submit(() -> {
-                ready.countDown();
-                start.await();
-                return request.startAndGetBuildFilters();
-            });
+            Submission<Boolean> first = router.submitTracked(TestScheduler.class, "champion", "build:222",
+                "first", JobPriority.NORMAL, job -> {
+                    started.countDown();
+                    try {
+                        return release.await(5, TimeUnit.SECONDS);
+                    } catch (InterruptedException failure) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException(failure);
+                    }
+                });
+            assertTrue(started.await(5, TimeUnit.SECONDS));
+            Submission<Boolean> next = router.submitTracked(TestScheduler.class, "champion", "build:222",
+                "follower", JobPriority.NORMAL, job -> false);
 
-            assertTrue(ready.await(2, TimeUnit.SECONDS));
-            start.countDown();
-
-            boolean accepted = add.get(2, TimeUnit.SECONDS);
-            List<Filter> buildFilters = snapshot.get(2, TimeUnit.SECONDS);
-            assertEquals(accepted ? 1 : 0, buildFilters.size());
-            if (accepted) assertEquals(buildFilter.toKey(), buildFilters.get(0).toKey());
-            assertFalse(request.tryAddBuild(buildFilter(412)));
+            assertEquals(first.pid(), next.pid());
+            release.countDown();
+            assertTrue(first.future().get(5, TimeUnit.SECONDS));
+            assertTrue(next.future().get(5, TimeUnit.SECONDS));
         } finally {
-            executor.shutdownNow();
+            release.countDown();
+            scheduler.shutdownDispatcher();
         }
     }
 
-    private static Filter buildFilter(int champion) {
-        return new Filter().setChampion(champion);
+    private static final class TestScheduler extends AbstractScheduler<String> {
+        TestScheduler(Registry registry) {
+            super("test", "test stopped", registry);
+        }
+
+        protected String routeName(String route) { return route; }
+        protected String workerThreadName(String route) { return "champion-test-"; }
+        protected String routeForJob(Object route) { return (String) route; }
     }
 }

@@ -1,27 +1,17 @@
 package com.safjnest.lol.champion;
 
-import com.safjnest.lol.utils.NumberUtils;
+import com.safjnest.utils.ParseUtils;
 
-import com.safjnest.lol.model.Filter;
 import com.safjnest.lol.utils.BuildUtils;
-import com.safjnest.lol.utils.GameQueueTypeUtils;
 import com.safjnest.lol.utils.ItemUtils;
-import com.safjnest.lol.service.StaticDataService;
-import java.util.HashSet;
 import com.safjnest.lol.utils.ChampionBuildTimelineUtils;
 
 import no.stelar7.api.r4j.pojo.lol.staticdata.item.Item;
-import org.json.JSONArray;
-import org.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
-import java.util.Set;
 
 public record BuildSignature(
         List<Integer> starter,
@@ -35,81 +25,60 @@ public record BuildSignature(
         List<Integer> summonerSpells
 ) {
 
-    private static final Set<Integer> SUPPORT_ITEMS = Set.of(3865, 3866, 3867, 3869, 3870, 3871, 3872, 3873, 3876, 3877, 3901, 3902, 3903);
-    private static final Set<Integer> TRINKETS = Set.of(3340, 3364, 3363, 3465, 3348);
-    private static final Set<Integer> CONSUMABLES = Set.of(2003, 2055, 2138, 2139, 2140, 2010);
-    private static final int COMPLETED_ITEM_DEPTH = 3;
+    private static final long STARTER_WINDOW_MILLIS = 2 * 60 * 1000L;
+    private static final int CORE_SIZE = 2;
 
-    public static BuildSignature from(JSONObject buildJson, JSONArray skillOrderJson, JSONArray augmentsJson, JSONArray summonerSpellsJson, Filter filter) {
-        return from(buildJson, skillOrderJson, augmentsJson, summonerSpellsJson, filter, List.of(), List.of());
-    }
+    static BuildSignature from(List<Integer> inventory, int roleBoundId, List<Integer> skillOrder,
+                               List<Integer> augments, List<Integer> summonerSpells, Map<Integer, Item> items,
+                               List<ChampionBuildTimelineUtils.ItemEvent> purchases) {
+        List<Integer> fullBuild = new ArrayList<>();
+        int starter = 0;
+        for (ChampionBuildTimelineUtils.ItemEvent purchase : purchases) {
+            int id = purchase.itemId();
+            Item item = items.get(id);
+            if (starter == 0 && purchase.timestampMillis() < STARTER_WINDOW_MILLIS && ItemUtils.isBuildPurchase(item)) {
+                starter = id;
+            }
+            if (id != starter && ItemUtils.isCoreItem(item, items) && !fullBuild.contains(id)) {
+                fullBuild.add(id);
+            }
+        }
+        if (fullBuild.size() < CORE_SIZE) {
+            return null;
+        }
 
-    public static BuildSignature from(JSONObject buildJson, JSONArray skillOrderJson,
-                                      JSONArray augmentsJson, JSONArray summonerSpellsJson, Filter filter,
-                                      List<ChampionBuildTimelineUtils.ItemEvent> itemEvents,
-                                      List<ChampionBuildTimelineUtils.SkillUpgrade> skillUpgrades) {
-        return from(buildJson, skillOrderJson, augmentsJson, summonerSpellsJson, filter,
-                itemEvents, List.of(), skillUpgrades);
-    }
-
-    public static BuildSignature from(JSONObject buildJson, JSONArray skillOrderJson,
-                                      JSONArray augmentsJson, JSONArray summonerSpellsJson, Filter filter,
-                                      List<ChampionBuildTimelineUtils.ItemEvent> itemEvents,
-                                      List<ChampionBuildTimelineUtils.ItemEvent> starterEvents,
-                                      List<ChampionBuildTimelineUtils.SkillUpgrade> skillUpgrades) {
-        JSONObject buildObj = buildJson.optJSONObject("build");
-        if (buildObj == null || buildObj.optJSONArray("build") == null) return null;
-
-        Map<Integer, Item> items = filter == null ? ItemUtils.getItems() : StaticDataService.getItems(filter.patch());
-        Set<Integer> bootIds = new HashSet<>();
-        for (var entry : items.entrySet()) if (ItemUtils.isBoots(entry.getValue())) bootIds.add(entry.getKey());
-        List<Integer> inventory = BuildUtils.jsonArrayToIntList(buildObj.optJSONArray("build"));
-        List<Integer> fullBuildList = extractFullBuild(buildObj, itemEvents, items, bootIds);
-        int boots = inventory.stream().filter(bootIds::contains)
-                .filter(id -> id != ItemUtils.BASE_BOOTS).findFirst().orElse(0);
-        int supportItem = inventory.stream().filter(SUPPORT_ITEMS::contains).findFirst().orElse(0);
-
-        List<Integer> starterList = extractStarter(filter, starterEvents, bootIds);
-
-        List<Integer> coreList = extractCore(fullBuildList, starterList, items);
-        if (coreList.size() < 2) return null;
-
-        Collections.sort(starterList);
-
-        List<Integer> spellOrderList = skillOrder(skillOrderJson, skillUpgrades);
-
-        List<Integer> prismaticIds = new ArrayList<>();
-        for (int id : inventory) if (ItemUtils.isPrismatic(id)) prismaticIds.add(id);
+        List<Integer> starterItems = starter == 0 ? List.of() : List.of(starter);
+        List<Integer> core = List.copyOf(fullBuild.subList(0, CORE_SIZE));
+        Item roleBoundItem = items.get(roleBoundId);
+        int boots = !ItemUtils.isUnupgradedBoots(roleBoundId) && ItemUtils.isBoots(roleBoundItem, items) ? roleBoundId : 0;
+        int supportItem = ItemUtils.isSupportItem(roleBoundItem) ? roleBoundId : 0;
+        for (int id : inventory) {
+            Item item = items.get(id);
+            if (boots == 0 && !ItemUtils.isUnupgradedBoots(id) && ItemUtils.isBoots(item, items)) {
+                boots = id;
+            }
+            if (supportItem == 0 && ItemUtils.isSupportItem(item)) {
+                supportItem = id;
+            }
+        }
 
         List<Integer> augmentIds = new ArrayList<>();
-        if (augmentsJson != null && augmentsJson.length() > 0) {
-            for (int i = 0; i < augmentsJson.length(); i++) {
-                int id = BuildUtils.parseAnyInt(augmentsJson.opt(i));
-                if (id != 0) augmentIds.add(id);
+        for (int id : augments) {
+            if (id != 0) {
+                augmentIds.add(id);
             }
         }
 
-        List<Integer> summonerSpellIds = new ArrayList<>();
-        if (summonerSpellsJson != null && summonerSpellsJson.length() > 0) {
-            for (int i = 0; i < summonerSpellsJson.length(); i++) {
-                int id = BuildUtils.parseAnyInt(summonerSpellsJson.opt(i));
-                if (id != 0) summonerSpellIds.add(id);
+        List<Integer> summonerSpellIds = new ArrayList<>(2);
+        for (int id : summonerSpells) {
+            if (id != 0) {
+                summonerSpellIds.add(id);
             }
         }
-
         Collections.sort(summonerSpellIds);
 
-        return new BuildSignature(
-                List.copyOf(starterList),
-                boots,
-                supportItem,
-                List.copyOf(coreList),
-                List.copyOf(fullBuildList),
-                List.copyOf(spellOrderList),
-                List.copyOf(prismaticIds),
-                List.copyOf(augmentIds),
-                List.copyOf(summonerSpellIds)
-        );
+        return new BuildSignature(starterItems, boots, supportItem, core, List.copyOf(fullBuild),
+            List.copyOf(skillOrder), List.of(), List.copyOf(augmentIds), List.copyOf(summonerSpellIds));
     }
 
     public String toCoreKey() {
@@ -131,8 +100,8 @@ public record BuildSignature(
         for (int level = 0; level < 18; level++) emptySkillOrder.add(0);
         return new BuildSignature(
                 parts.length > 0 ? BuildUtils.parseDashList(parts[0]) : List.of(),
-                NumberUtils.parseInt(parts[1]),
-                NumberUtils.parseInt(parts[2]),
+                ParseUtils.parseInt(parts[1]),
+                ParseUtils.parseInt(parts[2]),
                 parts.length > 3 ? BuildUtils.parseDashList(parts[3]) : List.of(),
                 parts.length > 4 ? BuildUtils.parseDashList(parts[4]) : List.of(),
                 parts.length > 5 ? decodeSpellOrderSegment(parts[5]) : emptySkillOrder,
@@ -163,127 +132,4 @@ public record BuildSignature(
         }
         return skillOrder;
     }
-
-    // -------------------------------------------------------------------------
-
-    private static List<Integer> extractStarter(Filter filter, List<ChampionBuildTimelineUtils.ItemEvent> starterEvents, Set<Integer> bootIds) {
-        Map<Integer, Integer> consumablesCount = new HashMap<>();
-        Integer boots = null;
-        Integer trinket = null;
-        Integer genericItem = null;
-
-        if (starterEvents != null) for (ChampionBuildTimelineUtils.ItemEvent event : starterEvents) {
-            int id = event.itemId();
-            if (id == 0) continue;
-
-            if (TRINKETS.contains(id)) {
-                continue;
-            }
-
-            if (bootIds.contains(id)) {
-                boots = id;
-                continue;
-            }
-
-            if (CONSUMABLES.contains(id)) {
-                if (id == 2055) {
-                    consumablesCount.merge(id, 1, Integer::sum);
-                } else {
-                    int count = consumablesCount.getOrDefault(id, 0);
-                    if (count < 2) {
-                        consumablesCount.put(id, count + 1);
-                    }
-                }
-                continue;
-            }
-
-            genericItem = id;
-        }
-
-        if (trinket == null && (filter == null || !GameQueueTypeUtils.isCherry(filter.queue())))
-            trinket = 3340;
-
-        List<Integer> result = new ArrayList<>();
-
-        for (Map.Entry<Integer, Integer> e : consumablesCount.entrySet()) {
-            for (int i = 0; i < e.getValue(); i++) {
-                result.add(e.getKey());
-            }
-        }
-
-        if (boots != null) result.add(boots);
-        if (trinket != null) result.add(trinket);
-        if (genericItem != null) result.add(genericItem);
-
-        return result;
-    }
-
-    static List<Integer> extractFullBuild(JSONObject buildObj, List<ChampionBuildTimelineUtils.ItemEvent> itemEvents) {
-        return extractFullBuild(buildObj, itemEvents, ItemUtils.getItems(), ItemUtils.getBoots());
-    }
-
-    private static List<Integer> extractFullBuild(JSONObject buildObj,
-            List<ChampionBuildTimelineUtils.ItemEvent> itemEvents, Map<Integer, Item> items, Set<Integer> bootIds) {
-        List<Integer> inventory = BuildUtils.jsonArrayToIntList(buildObj.optJSONArray("build"));
-        List<Integer> orderedInventory = orderByTimeline(inventory, itemEvents);
-        LinkedHashSet<Integer> ordered = new LinkedHashSet<>();
-        for (int id : orderedInventory) if (!isSkippable(id, items.get(id), bootIds)) ordered.add(id);
-        return new ArrayList<>(ordered);
-    }
-
-    static List<Integer> orderByTimeline(List<Integer> inventory, List<ChampionBuildTimelineUtils.ItemEvent> itemEvents) {
-        List<Integer> result = new ArrayList<>(inventory.size());
-        Map<Integer, Integer> remaining = new HashMap<>();
-        for (int id : inventory) if (id > 0) remaining.merge(id, 1, Integer::sum);
-        if (itemEvents != null) for (ChampionBuildTimelineUtils.ItemEvent event : itemEvents) {
-            int count = remaining.getOrDefault(event.itemId(), 0);
-            if (count == 0) continue;
-            result.add(event.itemId());
-            if (count == 1) remaining.remove(event.itemId());
-            else remaining.put(event.itemId(), count - 1);
-        }
-        for (int id : inventory) {
-            int count = remaining.getOrDefault(id, 0);
-            if (count == 0) continue;
-            result.add(id);
-            if (count == 1) remaining.remove(id);
-            else remaining.put(id, count - 1);
-        }
-        return result;
-    }
-
-    static List<Integer> skillOrder(JSONArray fallback, List<ChampionBuildTimelineUtils.SkillUpgrade> upgrades) {
-        return ChampionBuildTimelineUtils.skillOrder(fallback, upgrades);
-    }
-
-    private static List<Integer> extractCore(List<Integer> fullBuild, List<Integer> starterList, Map<Integer, Item> items) {
-        Integer first = null, second = null;
-        for (Integer id : fullBuild) {
-            Item item = items.get(id);
-            if (id == null || id == 0 || starterList.contains(id) || ItemUtils.isBoots(item) || SUPPORT_ITEMS.contains(id) || ItemUtils.isPrismatic(id)) continue;
-            if (first == null) { first = id; }
-            else if (!Objects.equals(first, id)) { second = id; break; }
-        }
-
-        List<Integer> core = new ArrayList<>();
-        if (first != null) core.add(first);
-        if (second != null) core.add(second);
-        return core;
-    }
-
-    static boolean isSkippable(int id, Item item) {
-        return isSkippable(id, item, item == null ? Set.of() : ItemUtils.getBoots());
-    }
-
-    private static boolean isSkippable(int id, Item item, Set<Integer> bootIds) {
-        if (id == 0 || TRINKETS.contains(id) || CONSUMABLES.contains(id)) return true;
-        if (item == null) return false;
-        if (item.getDepth() < COMPLETED_ITEM_DEPTH) return true;
-        try {
-            for (String from : item.getFrom())
-                if (bootIds.contains(Integer.parseInt(from))) return true;
-        } catch (Exception ignored) {}
-        return false;
-    }
-
 }

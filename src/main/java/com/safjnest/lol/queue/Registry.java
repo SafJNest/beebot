@@ -76,8 +76,9 @@ public final class Registry {
         return entry(job).future;
     }
 
-    public boolean following(Job<?> job) {
-        return entry(job).followingPid != null;
+    long workPid(Job<?> job) {
+        Long followingPid = entry(job).followingPid;
+        return followingPid == null ? job.pid() : followingPid;
     }
 
     public Job<?> source(Job<?> job) {

@@ -13,6 +13,7 @@ import java.util.stream.Collectors;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import com.safjnest.database.nosql.MongoDB;
 import com.safjnest.lol.LeagueHandler;
 import com.safjnest.lol.model.match.Match;
 import com.safjnest.lol.model.match.Participant;
@@ -37,9 +38,8 @@ import com.safjnest.lol.utils.ParticipantBuildCodec;
 import com.safjnest.lol.utils.RankProgressUtils;
 import com.safjnest.lol.utils.SeasonUtils;
 import com.safjnest.lol.utils.TierDivisionUtils;
-import com.safjnest.nosql.MongoDB;
+import com.safjnest.status.log.BotLogger;
 import com.safjnest.utils.TimeConstant;
-import com.safjnest.utils.log.BotLogger;
 
 import no.stelar7.api.r4j.basic.constants.api.regions.LeagueShard;
 import no.stelar7.api.r4j.basic.constants.types.KillType;
@@ -595,7 +595,13 @@ public class Tracker {
                 if (participant.getPlayerAugment3() != 0) augmentList += "," + participant.getPlayerAugment3();
                 if (participant.getPlayerAugment4() != 0) augmentList += "," + participant.getPlayerAugment4();
 
-                List<String> prismatics = List.of(itemsIds.split(",")).stream().filter(ItemUtils::isPrismatic).collect(Collectors.toList());
+                List<String> prismatics = new ArrayList<>();
+                for (String item : itemsIds.split(",")) {
+                    int itemId = Integer.parseInt(item);
+                    if (ItemUtils.isArenaPrismatic(itemId, items.get(itemId))) {
+                        prismatics.add(item);
+                    }
+                }
                 if (!prismatics.isEmpty()) {
                     matchData.get(participant.getPuuid()).put("prismatics", String.join(",", prismatics));
                 }

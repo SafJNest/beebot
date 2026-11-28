@@ -1,0 +1,506 @@
+{
+  "1001": {
+    "name": "Boots",
+    "into": [
+      "3005",
+      "3047",
+      "3008",
+      "3006",
+      "3009",
+      "3010",
+      "3020",
+      "3111",
+      "3117",
+      "3158"
+    ],
+    "gold": {
+      "base": 300,
+      "purchasable": true,
+      "total": 300,
+      "sell": 210
+    },
+    "tags": [
+      "Boots"
+    ]
+  },
+  "1027": {
+    "name": "Sapphire Crystal",
+    "into": [
+      "3024",
+      "3802",
+      "3803"
+    ],
+    "gold": {
+      "base": 300,
+      "purchasable": true,
+      "total": 300,
+      "sell": 210
+    },
+    "tags": [
+      "Mana"
+    ]
+  },
+  "1052": {
+    "name": "Amplifying Tome",
+    "into": [
+      "3113",
+      "2421",
+      "2420",
+      "3145",
+      "124011",
+      "4637",
+      "3916",
+      "6656",
+      "3147",
+      "3146",
+      "3802",
+      "4005",
+      "2508",
+      "326616",
+      "3108",
+      "3116",
+      "3124",
+      "4630",
+      "323504",
+      "4628",
+      "4632",
+      "4635",
+      "4642",
+      "4644"
+    ],
+    "gold": {
+      "base": 400,
+      "purchasable": true,
+      "total": 400,
+      "sell": 280
+    },
+    "tags": [
+      "SpellDamage"
+    ]
+  },
+  "1058": {
+    "name": "Needlessly Large Rod",
+    "into": [
+      "3157",
+      "4645",
+      "3089",
+      "3102",
+      "3128",
+      "4403"
+    ],
+    "gold": {
+      "base": 1200,
+      "purchasable": true,
+      "total": 1200,
+      "sell": 840
+    },
+    "tags": [
+      "SpellDamage"
+    ]
+  },
+  "1082": {
+    "name": "Dark Seal",
+    "into": [
+      "3041"
+    ],
+    "gold": {
+      "base": 350,
+      "purchasable": true,
+      "total": 350,
+      "sell": 140
+    },
+    "tags": [
+      "Health",
+      "SpellDamage",
+      "Lane"
+    ]
+  },
+  "1203": {
+    "name": "Support Quest",
+    "gold": {
+      "base": 0,
+      "purchasable": false,
+      "total": 0,
+      "sell": 0
+    },
+    "tags": [
+      "Lane"
+    ]
+  },
+  "1208": {
+    "name": "Support Quest Reward",
+    "gold": {
+      "base": 0,
+      "purchasable": false,
+      "total": 0,
+      "sell": 0
+    },
+    "tags": [
+      "Lane"
+    ]
+  },
+  "2003": {
+    "name": "Health Potion",
+    "consumed": true,
+    "gold": {
+      "base": 50,
+      "purchasable": true,
+      "total": 50,
+      "sell": 20
+    },
+    "tags": [
+      "HealthRegen",
+      "Consumable",
+      "Lane",
+      "Jungle"
+    ]
+  },
+  "2031": {
+    "name": "Refillable Potion",
+    "into": [
+      "2033"
+    ],
+    "gold": {
+      "base": 150,
+      "purchasable": true,
+      "total": 150,
+      "sell": 60
+    },
+    "tags": [
+      "HealthRegen",
+      "Consumable",
+      "Active",
+      "Lane",
+      "Jungle"
+    ]
+  },
+  "2055": {
+    "name": "Control Ward",
+    "consumed": true,
+    "gold": {
+      "base": 75,
+      "purchasable": true,
+      "total": 75,
+      "sell": 30
+    },
+    "tags": [
+      "Consumable",
+      "Lane",
+      "Stealth",
+      "Vision"
+    ]
+  },
+  "3020": {
+    "name": "Sorcerer's Shoes",
+    "from": [
+      "1001"
+    ],
+    "into": [
+      "3175"
+    ],
+    "gold": {
+      "base": 800,
+      "purchasable": true,
+      "total": 1100,
+      "sell": 770
+    },
+    "tags": [
+      "Boots",
+      "MagicPenetration"
+    ],
+    "depth": 2
+  },
+  "3089": {
+    "name": "Rabadon's Deathcap",
+    "from": [
+      "1058",
+      "1058"
+    ],
+    "gold": {
+      "base": 1100,
+      "purchasable": true,
+      "total": 3500,
+      "sell": 2450
+    },
+    "tags": [
+      "SpellDamage"
+    ],
+    "depth": 2
+  },
+  "3108": {
+    "name": "Fiendish Codex",
+    "from": [
+      "1052",
+      "2022"
+    ],
+    "into": [
+      "123430",
+      "4636",
+      "323003",
+      "3115",
+      "3003",
+      "326616",
+      "3107",
+      "3128",
+      "3137",
+      "8010",
+      "6616",
+      "4628",
+      "4629",
+      "4633"
+    ],
+    "gold": {
+      "base": 200,
+      "purchasable": true,
+      "total": 850,
+      "sell": 595
+    },
+    "tags": [
+      "SpellDamage",
+      "CooldownReduction",
+      "AbilityHaste"
+    ],
+    "depth": 2
+  },
+  "3145": {
+    "name": "Hextech Alternator",
+    "from": [
+      "1052",
+      "1052"
+    ],
+    "into": [
+      "4645",
+      "4636",
+      "3146",
+      "6655",
+      "3152",
+      "4646"
+    ],
+    "gold": {
+      "base": 300,
+      "purchasable": true,
+      "total": 1100,
+      "sell": 770
+    },
+    "tags": [
+      "SpellDamage"
+    ],
+    "depth": 2
+  },
+  "3340": {
+    "name": "Stealth Ward",
+    "gold": {
+      "base": 0,
+      "purchasable": true,
+      "total": 0,
+      "sell": 0
+    },
+    "tags": [
+      "Active",
+      "Jungle",
+      "Lane",
+      "Trinket",
+      "Vision"
+    ]
+  },
+  "3364": {
+    "name": "Oracle Lens",
+    "gold": {
+      "base": 0,
+      "purchasable": true,
+      "total": 0,
+      "sell": 0
+    },
+    "tags": [
+      "Active",
+      "Trinket",
+      "Vision"
+    ]
+  },
+  "3802": {
+    "name": "Lost Chapter",
+    "from": [
+      "1052",
+      "1027",
+      "2022"
+    ],
+    "into": [
+      "2522",
+      "323003",
+      "6656",
+      "3003",
+      "6655",
+      "2503",
+      "3118",
+      "4644"
+    ],
+    "gold": {
+      "base": 250,
+      "purchasable": true,
+      "total": 1200,
+      "sell": 840
+    },
+    "tags": [
+      "SpellDamage",
+      "Mana",
+      "ManaRegen",
+      "CooldownReduction",
+      "AbilityHaste"
+    ],
+    "depth": 2
+  },
+  "3865": {
+    "name": "World Atlas",
+    "gold": {
+      "base": 400,
+      "purchasable": true,
+      "total": 400,
+      "sell": 160
+    },
+    "tags": [
+      "Health",
+      "ManaRegen",
+      "Vision",
+      "GoldPer",
+      "Lane"
+    ]
+  },
+  "3866": {
+    "name": "Runic Compass",
+    "gold": {
+      "base": 400,
+      "purchasable": false,
+      "total": 400,
+      "sell": 160
+    },
+    "tags": [
+      "SpellDamage",
+      "ManaRegen",
+      "Vision",
+      "GoldPer",
+      "Lane"
+    ]
+  },
+  "3867": {
+    "name": "Bounty of Worlds",
+    "into": [
+      "3869",
+      "3870",
+      "3871",
+      "3876",
+      "3877"
+    ],
+    "gold": {
+      "base": 400,
+      "purchasable": false,
+      "total": 400,
+      "sell": 160
+    },
+    "tags": [
+      "SpellDamage",
+      "ManaRegen",
+      "Vision",
+      "GoldPer",
+      "Lane"
+    ]
+  },
+  "3871": {
+    "name": "Zaz'Zak's Realmspike",
+    "from": [
+      "3867"
+    ],
+    "gold": {
+      "base": 0,
+      "purchasable": true,
+      "total": 400,
+      "sell": 160
+    },
+    "tags": [
+      "Health",
+      "HealthRegen",
+      "ManaRegen",
+      "Vision",
+      "GoldPer",
+      "Lane"
+    ],
+    "depth": 2
+  },
+  "4628": {
+    "name": "Horizon Focus",
+    "from": [
+      "3108",
+      "3108",
+      "1052"
+    ],
+    "gold": {
+      "base": 600,
+      "purchasable": true,
+      "total": 2700,
+      "sell": 1890
+    },
+    "tags": [
+      "SpellDamage",
+      "AbilityHaste"
+    ],
+    "depth": 3
+  },
+  "4645": {
+    "name": "Shadowflame",
+    "from": [
+      "3145",
+      "1058"
+    ],
+    "gold": {
+      "base": 900,
+      "purchasable": true,
+      "total": 3200,
+      "sell": 2240
+    },
+    "tags": [
+      "SpellDamage",
+      "MagicPenetration"
+    ],
+    "depth": 3
+  },
+  "6655": {
+    "name": "Luden's Echo",
+    "from": [
+      "3802",
+      "3145"
+    ],
+    "gold": {
+      "base": 450,
+      "purchasable": true,
+      "total": 2750,
+      "sell": 1925
+    },
+    "tags": [
+      "SpellDamage",
+      "Mana",
+      "CooldownReduction",
+      "AbilityHaste"
+    ],
+    "depth": 3
+  },
+  "6657": {
+    "name": "Rod of Ages",
+    "from": [
+      "1026",
+      "3803"
+    ],
+    "gold": {
+      "base": 450,
+      "purchasable": true,
+      "total": 2600,
+      "sell": 1820
+    },
+    "tags": [
+      "Health",
+      "HealthRegen",
+      "SpellDamage",
+      "Mana",
+      "ManaRegen"
+    ],
+    "depth": 3
+  }
+}

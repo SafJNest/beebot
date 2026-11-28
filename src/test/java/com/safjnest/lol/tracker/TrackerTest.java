@@ -51,8 +51,8 @@ public class TrackerTest {
         assertEquals(19, skills.length());
         assertEquals("EVOLVE", skills.getJSONObject(11).getString("level_up_type"));
 
-        List<SkillUpgrade> upgrades = ChampionBuildTimelineUtils.skillUpgrades(rebuilt.events(), "kaisa");
-        assertEquals(order, ChampionBuildTimelineUtils.skillOrder(List.of(), upgrades));
+        List<SkillUpgrade> upgrades = ChampionBuildTimelineUtils.skillEvents(rebuilt.events(), "kaisa").upgrades();
+        assertEquals(order, upgrades.stream().map(SkillUpgrade::skillSlot).toList());
         assertEquals(List.of(6, 11, 16), upgrades.stream().filter(upgrade -> upgrade.skillSlot() == 4)
             .map(SkillUpgrade::championLevel).toList());
     }
